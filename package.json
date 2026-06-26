@@ -1,0 +1,16 @@
+{
+  "name": "yayoi-copilot",
+  "version": "0.1.0",
+  "description": "弥生会計コパイロットブラウザ",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "electron": "^30.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
