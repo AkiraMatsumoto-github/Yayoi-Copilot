@@ -2,23 +2,22 @@ import asyncio
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright, BrowserContext
-from langchain_openai import ChatOpenAI
-from browser_use import Agent
+from browser_use import Agent, BrowserSession
+from browser_use.llm.anthropic.chat import ChatAnthropic
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 SESSION_DIR = Path.home() / ".yayoi-copilot" / "session"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
-YAYOI_URL = "https://app.yayoi-kk.co.jp/"
+YAYOI_URL = "https://myaccount.yayoi-kk.co.jp/login"
 
 
 class YayoiAgent:
     def __init__(self) -> None:
         self.status: str = "IDLE"
         self._pause_event = asyncio.Event()
-        self._pause_event.set()  # 初期状態は実行可能
+        self._pause_event.set()
 
     def pause(self) -> None:
         self._pause_event.clear()
@@ -30,45 +29,46 @@ class YayoiAgent:
 
     async def run(self, prompt: str) -> None:
         self.status = "RUNNING"
+        session = BrowserSession(
+            user_data_dir=SESSION_DIR,
+            headless=False,
+            channel="chrome",
+            # Akamai BotManager対策: 自動化フラグを隠す
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         try:
-            async with async_playwright() as pw:
-                context: BrowserContext = await pw.chromium.launch_persistent_context(
-                    user_data_dir=str(SESSION_DIR),
-                    headless=False,
-                )
-                page = context.pages[0] if context.pages else await context.new_page()
+            await session.start()
+            await session._cdp_add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
 
-                if YAYOI_URL not in page.url:
-                    await page.goto(YAYOI_URL)
+            page = await session.must_get_current_page()
+            current_url = await page.get_url()
+            if YAYOI_URL not in current_url:
+                await page.goto(YAYOI_URL)
 
-                await self._handle_login_if_needed(page)
+            await self._wait_for_manual_login(page)
 
-                llm = ChatOpenAI(model="gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
-                browser_agent = Agent(task=prompt, llm=llm, browser=context)
-
-                await browser_agent.run()
-
-                await context.close()
+            llm = ChatAnthropic(
+                model="claude-sonnet-4-6",
+                api_key=os.getenv("ANTHROPIC_API_KEY"),
+            )
+            browser_agent = Agent(task=prompt, llm=llm, browser=session)
+            await browser_agent.run()
         finally:
+            await session.stop()
             self.status = "IDLE"
 
-    async def _handle_login_if_needed(self, page) -> None:
-        """ログインフォームが表示されていれば自動ログインを試みる。MFA発生時はPAUSEDへ移行。"""
-        try:
-            email_input = await page.wait_for_selector("input[type='email']", timeout=3000)
-            if email_input:
-                await email_input.fill(os.getenv("YAYOI_EMAIL", ""))
-                password_input = await page.wait_for_selector("input[type='password']")
-                await password_input.fill(os.getenv("YAYOI_PASSWORD", ""))
-                await page.keyboard.press("Enter")
+    async def _wait_for_manual_login(self, page) -> None:
+        """初回はユーザーが手動ログイン（MFA含む）。完了後 /api/resume で再開する。
+        セッションは user_data_dir に永続化されるため2回目以降は自動的にスキップされる。
+        """
+        await asyncio.sleep(2)
+        current_url = await page.get_url()
+        if "login" not in current_url:
+            return  # セッション有効 → ログイン済み
 
-                # MFA検知: ログイン後に再度認証画面が現れた場合
-                try:
-                    await page.wait_for_selector("input[type='email']", timeout=5000)
-                    # まだ認証画面 → MFA発生とみなし手動介入モードへ
-                    self.pause()
-                    await self._pause_event.wait()
-                except Exception:
-                    pass  # ログイン成功
-        except Exception:
-            pass  # ログイン不要（セッション有効）
+        # ログイン画面が表示されている → 手動ログインを待つ
+        print("[login] ログイン画面を検出。ブラウザで手動ログイン後 /api/resume を呼んでください。")
+        self.pause()
+        await self._pause_event.wait()

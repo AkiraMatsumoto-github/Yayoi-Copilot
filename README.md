@@ -10,7 +10,7 @@
 | バックエンド | Python + FastAPI |
 | ブラウザ制御 | Playwright (`launch_persistent_context`) |
 | AIエージェント | Browser Use + LangChain |
-| LLM | GPT-4o / Gemini 1.5 Pro（マルチモーダル） |
+| LLM | Claude Sonnet 4.6（Anthropic API） |
 
 ## ディレクトリ構成
 
@@ -18,6 +18,8 @@
 yayoi-copilot/
 ├── .env.example          # 環境変数テンプレート
 ├── .gitignore
+├── pyproject.toml        # Python依存関係（uv管理）
+├── uv.lock
 ├── package.json          # Electron依存関係
 ├── tsconfig.json
 ├── main.ts               # Electronメインプロセス
@@ -27,7 +29,6 @@ yayoi-copilot/
 │   └── design.md         # 全体設計書（詳細）
 ├── CLAUDE.md             # Claude Code用コンテキスト
 └── backend/
-    ├── requirements.txt
     ├── app.py            # FastAPIエントリポイント
     └── agent/
         ├── __init__.py
@@ -39,8 +40,8 @@ yayoi-copilot/
 ### 前提条件
 
 - Node.js 20+
-- Python 3.11+
-- Playwright Chromium
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
 
 ### インストール
 
@@ -49,23 +50,22 @@ yayoi-copilot/
 npm install
 
 # Pythonバックエンド
-cd backend
-pip install -r requirements.txt
-playwright install chromium
+uv sync
+uv run playwright install chromium
 ```
 
 ### 環境変数
 
 ```bash
 cp .env.example .env
-# .envにYayoiのID/PW、LLMのAPIキーを記入
+# .envにYayoiのID/PW、ANTHROPIC_API_KEYを記入
 ```
 
 ### 起動
 
 ```bash
 # バックエンド（別ターミナル）
-cd backend && uvicorn app:app --port 8000
+PYTHONPATH=backend uv run uvicorn backend.app:app --reload
 
 # Electronフロントエンド
 npm start

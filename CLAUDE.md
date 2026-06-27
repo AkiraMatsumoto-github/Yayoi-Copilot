@@ -6,10 +6,11 @@
 ## 技術スタック
 
 - **フロントエンド:** Electron + TypeScript
-- **バックエンド:** Python 3.11 + FastAPI + Uvicorn
+- **バックエンド:** Python 3.12 + FastAPI + Uvicorn
 - **ブラウザ制御:** Playwright (`launch_persistent_context`)
 - **AIエージェント:** browser-use + LangChain
-- **LLM:** GPT-4o（メイン）/ Gemini 1.5 Pro（サブ）
+- **LLM:** Claude Sonnet 4.6（Anthropic API）
+- **パッケージマネージャ:** uv（pip不使用）
 
 ## 重要な設計原則
 
@@ -33,6 +34,19 @@
 - `POST /api/pause` — AI操作の一時停止
 - `POST /api/resume` — AI操作の再開
 - `GET  /api/status` — 現在のAI状態取得（IDLE / RUNNING / PAUSED）
+
+## コマンド
+
+```bash
+# バックエンド起動
+PYTHONPATH=backend uv run uvicorn backend.app:app --reload
+
+# 依存関係追加
+uv add <package>
+
+# 依存関係インストール（クリーン環境）
+uv sync
+```
 
 ## 開発時の注意
 

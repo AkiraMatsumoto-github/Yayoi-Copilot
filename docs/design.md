@@ -110,22 +110,26 @@ IDLE ──[指示受信]──► RUNNING
 | RUNNING | 「操作中」バッジ表示・入力ロック | Playwright実行中（ノンブロッキング） |
 | PAUSED | 「手動介入受付中」バッジ・再開ボタン表示 | `asyncio.Event().wait()` で凍結 |
 
-### 6.3 MFA（二段階認証）対応
+### 6.3 ログイン方式（手動ログイン + セッション永続化）
 
-- 初回ログイン時にMFAが発生すると自動的に **PAUSED** へ遷移。
-- `page.wait_for_selector("[data-mfa-complete]")` で人間の認証完了を待機。
-- 認証後、セッションはローカルユーザーデータディレクトリに永続化。
+弥生のログインページは **Akamai BotManager** で保護され、さらに **MFA** を伴う。認証情報のプログラム自動入力は壊れやすく検知リスクも高いため、**自動ログインは行わない**。
+
+- **初回のみ手動ログイン:** ログイン画面を検出すると **PAUSED** へ遷移。ユーザーがブラウザ上で手動ログイン（MFA含む）し、`/api/resume` で再開する。
+- **2回目以降:** セッションが `~/.yayoi-copilot/session` に永続化されているため、ログイン画面はスキップされ、エージェントがそのまま操作を開始する。
+- **bot検知対策:** 実Chrome（`channel="chrome"`）を使用し、`--disable-blink-features=AutomationControlled` と `navigator.webdriver` の隠蔽で Akamai のブロックを回避する。
 
 ---
 
 ## 7. セッション永続化
 
-Playwrightの `launch_persistent_context` を使用し、ユーザーデータディレクトリ（`~/.yayoi-copilot/session`）にCookieとセッションを保存する。2回目以降の起動では自動ログイン状態から開始される。
+browser-use の `BrowserSession(user_data_dir=...)` を使用し、ユーザーデータディレクトリ（`~/.yayoi-copilot/session`）にCookieとセッションを保存する。2回目以降の起動ではログイン済み状態から開始される。
 
 ```python
-context = await playwright.chromium.launch_persistent_context(
+session = BrowserSession(
     user_data_dir="~/.yayoi-copilot/session",
     headless=False,
+    channel="chrome",
+    args=["--disable-blink-features=AutomationControlled"],
 )
 ```
 
@@ -135,10 +139,9 @@ context = await playwright.chromium.launch_persistent_context(
 
 | 変数名 | 用途 |
 |---|---|
-| `YAYOI_EMAIL` | 弥生会計ログインメールアドレス |
-| `YAYOI_PASSWORD` | 弥生会計ログインパスワード |
-| `OPENAI_API_KEY` | GPT-4o用APIキー |
-| `GEMINI_API_KEY` | Gemini用APIキー（オプション） |
+| `ANTHROPIC_API_KEY` | Claude Sonnet 4.6用APIキー |
+
+弥生のログイン情報は環境変数に保持しない（手動ログイン方式のため）。
 
 ---
 
