@@ -122,11 +122,16 @@ IDLE ──[指示受信]──► RUNNING
 
 ## 7. セッション永続化
 
-browser-use の `BrowserSession(user_data_dir=...)` を使用し、ユーザーデータディレクトリ（`~/.yayoi-copilot/session`）にCookieとセッションを保存する。2回目以降の起動ではログイン済み状態から開始される。
+browser-use の `BrowserSession(user_data_dir=...)` を使用し、ユーザーデータディレクトリにCookieとセッションを保存する。2回目以降の起動ではログイン済み状態から開始される。
+
+> **注意:** browser-use 0.13.1 は Chrome の `user_data_dir` を一時ディレクトリにコピーして動かし、
+> 書き戻さないため、通常のパスでは永続化されない。ディレクトリ名に `browser-use-user-data-dir-`
+> を含めるとコピーをスキップして直接使うため、`~/.yayoi-copilot/browser-use-user-data-dir-session`
+> を指定することでセッションを永続化している。
 
 ```python
 session = BrowserSession(
-    user_data_dir="~/.yayoi-copilot/session",
+    user_data_dir="~/.yayoi-copilot/browser-use-user-data-dir-session",
     headless=False,
     channel="chrome",
     args=["--disable-blink-features=AutomationControlled"],

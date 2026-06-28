@@ -5,27 +5,25 @@
   <title>Yayoi Copilot</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { display: flex; height: 100vh; font-family: sans-serif; background: #1a1a2e; color: #eee; }
-
-    #webview-area {
-      flex: 1;
-      border-right: 2px solid #333;
-    }
-    webview {
-      width: 100%;
-      height: 100%;
-    }
-
-    #side-panel {
-      width: 340px;
+    body {
       display: flex;
       flex-direction: column;
+      height: 100vh;
+      font-family: sans-serif;
+      background: #1a1a2e;
+      color: #eee;
       padding: 16px;
       gap: 12px;
     }
 
+    h1 {
+      font-size: 16px;
+      font-weight: bold;
+      color: #9ab;
+    }
+
     #status-badge {
-      padding: 6px 12px;
+      padding: 8px 12px;
       border-radius: 4px;
       font-size: 13px;
       font-weight: bold;
@@ -34,9 +32,9 @@
     }
     #status-badge.running { background: #1a5c3a; }
     #status-badge.paused  { background: #7a4a00; }
+    #status-badge.error   { background: #7a1a1a; }
 
     #prompt-input {
-      flex: 1;
       padding: 10px;
       border-radius: 6px;
       border: 1px solid #444;
@@ -54,24 +52,37 @@
       font-size: 14px;
       font-weight: bold;
     }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
     #btn-execute { background: #3a6ea5; color: #fff; }
     #btn-pause   { background: #a57a00; color: #fff; }
     #btn-resume  { background: #2a7a4a; color: #fff; display: none; }
+
+    #log-area {
+      flex: 1;
+      overflow-y: auto;
+      background: #12122a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 10px;
+      font-size: 12px;
+      font-family: monospace;
+      line-height: 1.5;
+    }
+    .log-line { margin-bottom: 4px; }
+    .log-time { color: #678; margin-right: 6px; }
   </style>
 </head>
 <body>
-  <div id="webview-area">
-    <webview src="https://app.yayoi-kk.co.jp/" partition="persist:yayoi"></webview>
-  </div>
+  <h1>弥生会計コパイロット</h1>
+  <div id="status-badge">待機中 (IDLE)</div>
 
-  <div id="side-panel">
-    <div id="status-badge">待機中 (IDLE)</div>
-    <textarea id="prompt-input" placeholder="指示を入力（例：3行目の摘要を修正して）" rows="6"></textarea>
-    <button class="btn" id="btn-execute">実行</button>
-    <button class="btn" id="btn-pause">一時停止</button>
-    <button class="btn" id="btn-resume">再開</button>
-  </div>
+  <textarea id="prompt-input" placeholder="指示を入力（例：3行目の摘要を修正して）" rows="4"></textarea>
+  <button class="btn" id="btn-execute">実行</button>
+  <button class="btn" id="btn-pause">一時停止</button>
+  <button class="btn" id="btn-resume">再開（手動ログイン完了後など）</button>
 
-  <script src="renderer.js"></script>
+  <div id="log-area"></div>
+
+  <script src="dist/renderer.js"></script>
 </body>
 </html>

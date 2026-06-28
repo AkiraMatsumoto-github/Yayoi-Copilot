@@ -2,9 +2,9 @@
   "name": "yayoi-copilot",
   "version": "0.1.0",
   "description": "弥生会計コパイロットブラウザ",
-  "main": "main.js",
+  "main": "dist/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "npm run build && electron .",
     "build": "tsc",
     "dev": "tsc --watch"
   },

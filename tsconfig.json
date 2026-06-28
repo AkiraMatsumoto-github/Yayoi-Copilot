@@ -5,7 +5,8 @@
     "strict": true,
     "esModuleInterop": true,
     "outDir": "./dist",
-    "rootDir": "./"
+    "rootDir": "./",
+    "skipLibCheck": true
   },
   "include": ["main.ts", "renderer.ts"]
 }

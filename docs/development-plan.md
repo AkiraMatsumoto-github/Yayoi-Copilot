@@ -19,12 +19,34 @@
 - 弥生ログインは **Akamai + MFA** 保護のため、認証情報の自動入力は不採用。
 - `channel="chrome"`（実Chrome）が必須。Playwright標準Chromiumはブロックされる。
 - browser_use の `page.evaluate` は Akamai のアンチボットJSと干渉して遅延するため多用しない。
-- セッション永続化により2回目以降はログイン不要。
+- **セッション永続化の落とし穴と対策**：browser_use 0.13.1 は Chrome の `user_data_dir` を
+  一時ディレクトリにコピーして使い書き戻さないため、通常のパスだと毎回ログインが必要になる。
+  ディレクトリ名に `browser-use-user-data-dir-` を含めるとコピーをスキップして直接使うため、
+  `SESSION_DIR` をこの名前にすることで永続化を実現（1回ログインすれば以降スキップ。実機確認済み）。
+- 操作対象の弥生製品は **「やよいの青色申告 オンライン」**（マイポータルのトップから入る）。
+  仕訳は レポート・帳簿 → 仕訳帳 で一覧表示できる。
+
+### 実機検証の結果（2026-06-28）
+- **画面遷移＋読み取りタスクが実機で成功**。
+  - 例1: マイポータルの「契約管理」を開いて内容を報告（5ステップ）。サブメニュー展開型のUIに
+    自己修正しながら到達。
+  - 例2: 「やよいの青色申告 オンライン」→ 仕訳帳 を開き、**実データの仕訳11件を正確に読み取り**
+    （取引番号・日付・摘要・借方/貸方勘定科目・金額）。読み取り専用の制約も遵守。
+  - 複雑な仕訳グリッドの**読み取り精度は実用レベル**であることを確認。書き換え操作は未検証。
+
+### 完了済み（追加）
+- [x] **Electron コントロールパネル実装**（`main.ts` でバックエンドをspawn、`index.html` + `renderer.ts` でステータス・実行・一時停止・再開・ログ表示）
+- [x] CORS設定（`file://` オリジンからのfetch許可）
+- [x] ERROR状態の追加（例外時に `ERROR` へ遷移し、GUIに赤バッジ表示）
+- [x] **操作ステップの観察ログ**（`register_new_step_callback` で各ステップのnext_goal/actionを収集、`/api/log` で取得、GUIに表示）
+- [x] **セッション永続化の修正**（`SESSION_DIR` 名で temp-copy を回避。1回ログインで以降スキップを実機確認）
+- [x] **読み取りタスクの実機検証成功**（契約管理の閲覧／仕訳帳11件の正確な読み取り）
 
 ### 未着手
 - [ ] 実操作タスクの検証（仕訳の検索・修正）
-- [ ] エラーハンドリング（リトライ・ERROR状態）
-- [ ] Electron フロントエンド実装
+- [ ] エラーハンドリングの拡充（リトライ・DOM要素未検出時のPAUSED遷移）
+- [ ] WebSocketによるリアルタイム状態同期（現状は2秒ポーリング）
+- [ ] 操作ログのリアルタイム表示（browser-useコールバック連携）
 - [ ] 音声入力
 
 ---
@@ -91,30 +113,38 @@ curl http://localhost:8000/api/status
 
 **ゴール:** デスクトップアプリとして、左に弥生会計WebView・右にコントロールパネルが表示される。
 
-### Step 2-1: Electronメインプロセス（`main.ts`）の実装
+### ⚠ アーキテクチャ変更（重要）
+
+当初は「左: 弥生WebView / 右: Side Panel」を想定していたが、実際には
+**browser-use が独自の実Chromeウィンドウを起動**する（手動ログインするのもこの画面）。
+ElectronのWebViewとbrowser-useのChromeはセッションも別で、WebViewにAI操作は反映されない。
+
+→ **Electron はコントロールパネルGUIに徹する**方針へ変更。
+AIが操作するChromeは別ウィンドウとして表示し、ユーザーはそちらを見る。
+ElectronはFastAPIバックエンドを起動・操作し、ステータスとログを表示する。
+
+### Step 2-1: Electronメインプロセス（`main.ts`）の実装 ✅ 完了
 
 ```
 main.ts の責務：
-- BrowserWindow の生成（左: WebView / 右: Side Panel）
-- アプリ起動時に Python バックエンドをサブプロセスとして起動
-- アプリ終了時にバックエンドを終了
+- BrowserWindow（コントロールパネル）の生成
+- アプリ起動時に Python バックエンドを spawn（uv run uvicorn）
+- アプリ終了時にバックエンドを kill
 ```
 
-実装ポイント：
-- `child_process.spawn` で `uv run uvicorn ...` を起動
-- バックエンドの Ready 確認（`/api/status` へのポーリング）
-- WebView の `partition` を設定してセッションをElectronと分離
+実装済みポイント：
+- `child_process.spawn("uv", ["run","uvicorn","backend.app:app",...])` を `PYTHONPATH=backend` 付きで起動
+- `window-all-closed` / `before-quit` でバックエンドを確実に終了
+- コンパイル出力は `dist/`、`PROJECT_ROOT = __dirname/..` でルートの `index.html` をロード
 
-### Step 2-2: Side Panel UI の仕上げ
+### Step 2-2: コントロールパネル UI の仕上げ ✅ 完了
 
-現状の `index.html` + `renderer.ts` はスケルトン状態。以下を実装：
-
-| 要素 | 実装内容 |
+| 要素 | 実装状況 |
 |---|---|
-| プロンプト入力欄 | テキストエリア + 送信ボタン |
-| ステータスバッジ | IDLE（灰） / RUNNING（緑・アニメ） / PAUSED（黄） / ERROR（赤） |
-| 一時停止・再開ボタン | RUNNING時のみ停止表示、PAUSED時のみ再開表示 |
-| 操作ログ | エージェントのアクション履歴をリアルタイム表示 |
+| プロンプト入力欄 | ✅ テキストエリア + 実行ボタン |
+| ステータスバッジ | ✅ IDLE（灰） / RUNNING（緑） / PAUSED（黄） / ERROR（赤） |
+| 一時停止・再開ボタン | ✅ 状態に応じて活性/非活性・表示切替 |
+| 操作ログ | ✅ 状態遷移・実行指示をクライアント側でログ表示（browser-useのアクション履歴連携はStep 3-1で対応） |
 
 ### Step 2-3: WebSocket によるリアルタイム状態同期
 
