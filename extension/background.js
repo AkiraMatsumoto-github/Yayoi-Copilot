@@ -12,9 +12,18 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
+let isRunning = false;
+let abortRequested = false;
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "run") {
+    if (isRunning) return; // 二重実行を防ぐ
     runAgent(msg.task).catch((e) => send({ type: "error", text: String(e) }));
+  } else if (msg.type === "stop") {
+    if (isRunning) {
+      abortRequested = true;
+      sendLog("⏹ 中断を要求しました…（現在のステップ完了後に停止します）");
+    }
   }
 });
 
@@ -33,10 +42,16 @@ async function runAgent(task) {
   }
   const tabId = tab.id;
 
+  isRunning = true;
+  abortRequested = false;
   await chrome.debugger.attach({ tabId }, "1.3");
   const history = [];
   try {
     for (let step = 1; step <= MAX_STEPS; step++) {
+      if (abortRequested) {
+        send({ type: "stopped", result: "中断しました。" });
+        return;
+      }
       const page = await extract(tabId);
       sendLog(`[${step}] ${page.title || "(無題)"} / 要素 ${page.elements.length} 個`);
 
@@ -58,12 +73,19 @@ async function runAgent(task) {
         return;
       }
 
+      if (abortRequested) {
+        send({ type: "stopped", result: "中断しました。" });
+        return;
+      }
+
       await execute(tabId, action);
       history.push({ action: action.action, index: action.index, text: action.text });
       await sleep(SETTLE_MS);
     }
     send({ type: "done", result: "最大ステップ数に達しました。" });
   } finally {
+    isRunning = false;
+    abortRequested = false;
     try {
       await chrome.debugger.detach({ tabId });
     } catch (e) {
