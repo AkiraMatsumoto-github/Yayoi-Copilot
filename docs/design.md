@@ -86,7 +86,7 @@ User（サイドパネルに指示入力）→ background.js
 
 ## 6. 操作実行の仕組み（trusted イベント）
 
-弥生はSPA。合成イベント（`element.click()` 等の untrusted イベント）では反応しないハンドラがある。本拡張は `chrome.debugger` 経由で **CDP の `Input.dispatchMouseEvent` / `Input.insertText`** を送る。これらはOS由来のユーザー操作と同等の **trusted イベント** として扱われ、SPAのハンドラが確実に発火する（実画面で検証済み）。
+弥生会計オンラインは多ページ型（MPA）のWebアプリだが、合成イベント（`element.click()` 等の untrusted イベント）では反応しないJSハンドラがある。本拡張は `chrome.debugger` 経由で **CDP の `Input.dispatchMouseEvent` / `Input.insertText`** を送る。これらはOS由来のユーザー操作と同等の **trusted イベント** として扱われ、弥生のハンドラが確実に発火する（実画面で検証済み）。
 
 - 座標はページ内で `getBoundingClientRect()` から要素中心を算出（CSSピクセル＝CDP座標系と一致）。
 - アタッチ中はChromeが「拡張機能がこのブラウザをデバッグしています」バーを表示する（仕様）。
@@ -119,7 +119,7 @@ User（サイドパネルに指示入力）→ background.js
 
 ### 検証済み（実画面）
 
-- 本物のChrome上で拡張のサイドパネルが起動し、`chrome.debugger` のクリックを弥生SPAが受け付けることを確認。
+- 本物のChrome上で拡張のサイドパネルが起動し、`chrome.debugger` のクリックを弥生の画面が受け付けることを確認。
 - 「契約管理を開いて内容を報告して」が、ページ本文を読んで done で報告するところまで動作。
 
 ### 今後
