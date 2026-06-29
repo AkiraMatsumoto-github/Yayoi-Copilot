@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "弥生会計コパイロット (PoC)",
+  "version": "0.1.0",
+  "description": "弥生会計オンラインをAIで操作するサイドパネル（PoC）。ユーザーの本物のChromeで動作する。",
+  "permissions": [
+    "sidePanel",
+    "scripting",
+    "debugger",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.yayoi-kk.co.jp/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "弥生会計コパイロット"
+  }
+}

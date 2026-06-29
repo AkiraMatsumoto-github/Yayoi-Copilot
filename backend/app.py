@@ -1,12 +1,23 @@
+"""弥生会計コパイロット — バックエンド（Chrome拡張用の軽量プロキシ）。
+
+役割は2つだけ:
+1. ANTHROPIC_API_KEY を保持し、Claude への問い合わせを代行する（鍵を拡張に渡さない）。
+2. 拡張が抽出した画面状態を受け取り、次の操作を1つ返す（/api/agent/next）。
+
+ブラウザ操作そのものは Chrome 拡張（chrome.debugger / chrome.scripting）が行う。
+"""
+
 import asyncio
-from fastapi import FastAPI, BackgroundTasks
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from agent.core import YayoiAgent
 
-app = FastAPI()
+from agent.ext_brain import next_action
 
-# Electron レンダラ（file:// オリジン）からの fetch を許可する。
+app = FastAPI(title="Yayoi Copilot Backend")
+
+# Chrome拡張（chrome-extension:// オリジン）からの fetch を許可する。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,37 +25,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-agent = YayoiAgent()
+
+class PageState(BaseModel):
+    url: str = ""
+    title: str = ""
+    text: str = ""
+    elements: list[dict] = []
 
 
-class ExecuteRequest(BaseModel):
-    prompt: str
+class NextActionRequest(BaseModel):
+    task: str
+    page: PageState
+    history: list[dict] = []
 
 
-@app.post("/api/execute")
-async def execute(req: ExecuteRequest, background_tasks: BackgroundTasks):
-    background_tasks.add_task(agent.run, req.prompt)
+@app.get("/api/health")
+async def health():
     return {"ok": True}
 
 
-@app.post("/api/pause")
-async def pause():
-    agent.pause()
-    return {"ok": True}
-
-
-@app.post("/api/resume")
-async def resume():
-    agent.resume()
-    return {"ok": True}
-
-
-@app.get("/api/status")
-async def status():
-    return {"status": agent.status}
-
-
-@app.get("/api/log")
-async def log():
-    """エージェントの各ステップ（次の目標＋実行した操作）を返す。GUIで観察用。"""
-    return {"steps": agent.steps}
+@app.post("/api/agent/next")
+async def agent_next(req: NextActionRequest):
+    """拡張が抽出した画面状態＋タスク＋履歴を受け取り、Claudeに次の1手を決めさせる。"""
+    action = await asyncio.to_thread(
+        next_action, req.task, req.page.model_dump(), req.history
+    )
+    return {"action": action}

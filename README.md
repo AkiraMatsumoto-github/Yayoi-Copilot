@@ -1,84 +1,83 @@
-# Yayoi Copilot — 弥生会計コパイロットブラウザ
+# Yayoi Copilot — 弥生会計コパイロット
 
-音声/テキスト指示で弥生会計オンラインを自律操作する、Human-in-the-Loop型のデスクトップコパイロット。
+自然言語の指示で「弥生会計オンライン（やよいの青色申告 オンライン）」を操作する **Chrome拡張機能**。
+ユーザー自身の本物のChrome上で動くため、Akamai BotManager のbot検知もログイン（MFA含む）も通常どおり通る。
 
-## 技術スタック
+## アーキテクチャ
 
-| レイヤー | 技術 |
-|---|---|
-| フロントエンド | Electron + TypeScript |
-| バックエンド | Python + FastAPI |
-| ブラウザ制御 | Playwright (`launch_persistent_context`) |
-| AIエージェント | Browser Use + LangChain |
-| LLM | Claude Sonnet 4.6（Anthropic API） |
+```
+┌──────────────── ユーザーの Chrome ────────────────┐
+│  弥生会計のタブ          サイドパネル（拡張UI）   │
+│  （操作対象）            ・指示入力 / 実行ボタン  │
+│                          ・実行ログ表示          │
+│                                                  │
+│  background.js（サービスワーカー）= エージェント  │
+│   1. chrome.scripting で画面のDOM＋本文を抽出     │
+│   2. バックエンドに次の操作を問い合わせ          │
+│   3. chrome.debugger で trusted なクリック/入力   │
+│   …done まで繰り返す                             │
+└────────────────────────┬─────────────────────────┘
+                         │ HTTP (localhost:8000)
+                         ▼
+┌──────────── Python バックエンド ─────────────────┐
+│  FastAPI = Claudeプロキシ（鍵を拡張に渡さない）   │
+│  POST /api/agent/next → Claude が次の1手を決定    │
+└──────────────────────────────────────────────────┘
+```
+
+- **操作の実体は拡張機能**（`chrome.debugger` の Input イベント＝OS由来と同等の trusted な操作）。
+- **バックエンドは軽量プロキシ**。`ANTHROPIC_API_KEY` を保持し、Claude への問い合わせのみ代行する。拡張は鍵を一切持たない。
+- ログインは初回・以降ともユーザーが普段どおり手動で行う（認証情報の自動入力はしない）。
 
 ## ディレクトリ構成
 
 ```
 yayoi-copilot/
-├── .env.example          # 環境変数テンプレート
-├── .gitignore
-├── pyproject.toml        # Python依存関係（uv管理）
-├── uv.lock
-├── package.json          # Electron依存関係
-├── tsconfig.json
-├── main.ts               # Electronメインプロセス
-├── index.html            # 左: WebView / 右: Side Panel
-├── renderer.ts           # UIイベント・FastAPI通信
-├── docs/
-│   └── design.md         # 全体設計書（詳細）
-├── CLAUDE.md             # Claude Code用コンテキスト
-└── backend/
-    ├── app.py            # FastAPIエントリポイント
-    └── agent/
-        ├── __init__.py
-        └── core.py       # Browser Use / Playwright制御ロジック
+├── extension/                # Chrome拡張（MV3）
+│   ├── manifest.json
+│   ├── sidepanel.html / .js  # サイドパネルUI（指示入力・ログ）
+│   └── background.js         # エージェントループ（抽出→問い合わせ→操作）
+├── backend/
+│   ├── app.py                # FastAPI（/api/agent/next）
+│   └── agent/
+│       └── ext_brain.py      # Claudeに次の操作を決めさせる頭脳
+├── docs/design.md
+├── pyproject.toml            # Python依存（uv管理）
+└── .env                      # ANTHROPIC_API_KEY（コミット禁止）
 ```
 
 ## セットアップ
 
-### 前提条件
+### 前提
+- Python 3.12+ / [uv](https://docs.astral.sh/uv/)
+- Google Chrome
 
-- Node.js 20+
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
-
-### インストール
+### 1. バックエンドを起動
 
 ```bash
-# Electronフロントエンド
-npm install
-
-# Pythonバックエンド
+cp .env.example .env          # ANTHROPIC_API_KEY を記入
 uv sync
-uv run playwright install chromium
+PYTHONPATH=backend uv run uvicorn backend.app:app --port 8000
 ```
 
-### 環境変数
+### 2. 拡張機能を読み込む
 
-```bash
-cp .env.example .env
-# .envにYayoiのID/PW、ANTHROPIC_API_KEYを記入
-```
+1. `chrome://extensions` を開き「デベロッパーモード」をON
+2. 「パッケージ化されていない拡張機能を読み込む」→ `extension/` フォルダを選択
+   - ※ WSLで開発している場合、`/home/...` のパスはWindows版Chromeから直接読めない。`extension/` をWindows側（例: `C:\Users\<user>\yayoi-copilot-extension`）にコピーしてそこを指定する
 
-### 起動
+### 3. 使う
 
-```bash
-# バックエンド（別ターミナル）
-PYTHONPATH=backend uv run uvicorn backend.app:app --reload
+1. やよいの青色申告オンラインにログイン
+2. ツールバーの拡張アイコンをクリック → サイドパネルが開く
+3. 弥生のタブをアクティブにして指示を入力 → 「実行」
+   - 例: 「契約管理を開いて内容を報告して」「仕訳帳を開いて最近の仕訳を5件報告して」
 
-# Electronフロントエンド
-npm start
-```
+> ⚠ 実行中は「拡張機能がこのブラウザをデバッグしています」という黄色いバーが出る（`chrome.debugger` を使うため）。閉じると操作が止まる。
 
-## 開発フェーズ
+## 設計上の原則
 
-| Phase | 内容 | 状態 |
-|---|---|---|
-| Phase 1 | Python単体でBrowser Use + Playwright動作検証 | 未着手 |
-| Phase 2 | Electron + FastAPI連携（IPC/HTTP通信） | 未着手 |
-| Phase 3 | 手動介入・MFA待機・例外処理の実装 | 未着手 |
+- **書き込み系は明示指示があるときだけ。** 読み取り・確認系はユーザーが指示しない限りデータの入力・変更・保存・削除を行わない（`ext_brain.py` のシステムプロンプトで制約）。
+- `.env` は絶対にコミットしない。
 
-## ドキュメント
-
-詳細な設計・アーキテクチャは [docs/design.md](docs/design.md) を参照。
+詳細は [docs/design.md](docs/design.md) を参照。

@@ -1,13 +1,12 @@
 [project]
 name = "yayoi-copilot"
 version = "0.1.0"
-description = "Add your description here"
+description = "弥生会計オンラインをAIで操作するChrome拡張のバックエンド（Claudeプロキシ）"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "browser-use>=0.13.1",
+    "anthropic>=0.76.0",
     "fastapi>=0.138.1",
-    "playwright>=1.60.0",
     "python-dotenv>=1.2.2",
     "uvicorn[standard]>=0.49.0",
 ]

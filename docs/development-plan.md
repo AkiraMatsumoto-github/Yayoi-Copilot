@@ -1,5 +1,36 @@
 # 弥生会計コパイロット — 開発計画
 
+## アーキテクチャ転換（2026-06-29）— Chrome拡張へ完全移行
+
+browser-use + Electron 構成から、**Chrome拡張機能** 構成へ完全移行した。
+旧構成のコード（`main.ts` / `renderer.ts` / `index.html` / `backend/agent/core.py`、
+および `/api/execute` `/api/pause` `/api/resume` `/api/status` `/api/log`）は削除済み。
+
+### 移行の理由
+- 拡張は **ユーザーの本物のChrome** で動くため、Akamai BotManager のbot検知も、ログイン（MFA含む）も
+  通常どおり通る。browser-useで苦労した「アクセス拒否」「毎回ログイン」「temp-copyでのセッション喪失」が
+  構造的に解消する。
+- 操作対象の弥生タブの **隣にサイドパネル** として同居できる（別ウィンドウ／別ブラウザが不要）。
+
+### 新構成
+- `extension/`（MV3）: `manifest.json` / `sidepanel.html` `sidepanel.js` / `background.js`（エージェントループ）。
+- `backend/`: FastAPI を **Claudeプロキシ** に縮小。`/api/agent/next` と `/api/health` のみ。
+  `backend/agent/ext_brain.py` がClaudeに次の1手を決めさせる。
+- 依存から `browser-use` / `playwright` を削除。
+
+### 実機検証済み
+- 本物のChromeで拡張サイドパネルが起動し、`chrome.debugger` のクリックを弥生SPAが受け付けることを確認。
+- 「契約管理を開いて内容を報告して」が、ページ本文を読んで done で報告するところまで動作。
+  （初期はページ本文をClaudeに渡しておらずループしたが、`page.text` を渡すことで解消）
+
+### 次の検証
+- [ ] **書き込み・編集操作**（既存仕訳の修正）。協調ワークフロー（最後の保存は人間）。
+- [ ] ループ検知・リトライ・例外処理の強化。
+
+> 以下は旧 browser-use + Electron 構成での開発記録（歴史的経緯として保存）。
+
+---
+
 ## 現在の状態（2026-06-27時点）
 
 ### 完了済み

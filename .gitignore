@@ -1,8 +1,4 @@
 .env
-node_modules/
-dist/
-out/
-*.js.map
 __pycache__/
 *.pyc
 .venv/

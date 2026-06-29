@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      gap: 10px;
+    }
+    h1 { font-size: 14px; color: #9ab; }
+    #status {
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: bold;
+      text-align: center;
+      background: #2a2a4a;
+    }
+    #status.running { background: #1a5c3a; }
+    #status.error { background: #7a1a1a; }
+    #task {
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #444;
+      background: #12122a;
+      color: #eee;
+      font-size: 13px;
+      resize: none;
+    }
+    #run {
+      padding: 9px;
+      border-radius: 6px;
+      border: none;
+      background: #3a6ea5;
+      color: #fff;
+      font-weight: bold;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    #run:disabled { opacity: 0.4; cursor: not-allowed; }
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      background: #12122a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 11px;
+      font-family: monospace;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .line { margin-bottom: 4px; }
+    .t { color: #678; margin-right: 5px; }
+  </style>
+</head>
+<body>
+  <h1>弥生会計コパイロット (PoC)</h1>
+  <div id="status">待機中</div>
+  <textarea id="task" rows="3" placeholder="指示を入力（例：仕訳帳を開いて最近の仕訳を5件報告して）"></textarea>
+  <button id="run">実行</button>
+  <div id="log"></div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

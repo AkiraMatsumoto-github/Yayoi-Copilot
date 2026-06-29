@@ -1,20 +1,20 @@
-# 弥生会計コパイロットブラウザ — 全体設計書
+# 弥生会計コパイロット — 全体設計書
 
 ## 1. 背景と目的
 
-「弥生会計オンライン」における日々の仕訳データ入力・既存レコードの修正作業は、依然として手動によるUI操作の負担が大きい。本プロジェクトは、音声またはテキストによる自然言語指示を理解し、ブラウザ上の弥生会計の画面を自律的に操作・編集できる、手動介入（Human-in-the-Loop）型の専用コパイロットブラウザを構築することを目的とする。
+「弥生会計オンライン（やよいの青色申告 オンライン）」における日々の仕訳データの確認・入力・修正は、依然として手動UI操作の負担が大きい。本プロジェクトは、自然言語の指示を理解して弥生会計の画面を自律的に操作・確認・編集できる、手動介入（Human-in-the-Loop）型のコパイロットを **Chrome拡張機能** として構築することを目的とする。
 
 ## 2. コアバリュー
 
-- **シームレスな手動介入:** AIの自動操作中であっても、人間がいつでもマウス・キーボードで割り込んで操作可能。
-- **自律的な画面認識:** 画面のDOM構造（HTML）やスクリーンショットをLLM（マルチモーダル）が直接解析し、既存レコードの特定や編集を柔軟に行う。
-- **セッションの永続化:** 認証情報を安全にローカルに保持し、2回目以降の高速な起動を実現。
+- **ユーザーの本物のChromeで動く:** Akamai BotManager のbot検知も、ログイン（MFA含む）も通常どおり通る。専用ブラウザの自動化で詰まっていた「そもそもアクセスできない／毎回ログイン」を構造的に回避する。
+- **自律的な画面認識:** 画面のDOM（操作可能要素）とページ本文をLLMが解析し、対象要素の特定や内容の読み取りを柔軟に行う。
+- **シームレスな同居:** 操作対象の弥生タブの隣にサイドパネルとして常駐。別ウィンドウや別ブラウザを立てない。
 
 ## 3. ターゲット・ユースケース
 
-1. 「一覧の3番目の金額を2,000円に直して」などの音声指示による既存仕訳の修正。
-2. 「昨日入れたアスクルの摘要を〇〇に変更して」などの曖昧な検索を伴うデータ編集。
-3. AIがフォーム入力まで行い、最後の目視確認と「保存」ボタンのクリックは人間が行う協調ワークフロー。
+1. 「契約管理を開いて内容を報告して」「仕訳帳の最近の仕訳を5件報告して」などの確認・読み取り。
+2. 「一覧の3番目の金額を2,000円に直して」などの既存仕訳の修正（書き込みは明示指示時のみ）。
+3. AIがフォーム入力まで行い、最後の目視確認と「保存」は人間が行う協調ワークフロー。
 
 ---
 
@@ -23,148 +23,107 @@
 ### 4.1 全体構成
 
 ```
-┌─────────────────────────────────────────────────┐
-│              Electron アプリ                     │
-│  ┌──────────────────┐  ┌───────────────────────┐│
-│  │  WebView (左)    │  │  Side Panel (右)      ││
-│  │  弥生会計画面    │  │  ・プロンプト入力     ││
-│  │  リアルタイム    │  │  ・音声マイク入力     ││
-│  │  AI操作の視認    │  │  ・AIステータス表示   ││
-│  │  手動割り込み可  │  │  ・一時停止/再開ボタン││
-│  └──────────────────┘  └───────────────────────┘│
-└──────────────────────┬──────────────────────────┘
-                       │ HTTP / WebSocket
-                       ▼
-┌─────────────────────────────────────────────────┐
-│             Python バックエンド                  │
-│  FastAPI  →  AIエージェント  →  Playwright       │
-│  (app.py)    (Browser Use)      (Chromium)      │
-└─────────────────────────────────────────────────┘
+┌──────────────── ユーザーの Chrome ────────────────┐
+│  弥生会計のタブ          サイドパネル（拡張UI）   │
+│  （操作対象）            ・指示入力 / 実行         │
+│                          ・実行ログ表示           │
+│                                                  │
+│  background.js（サービスワーカー）= エージェント  │
+└────────────────────────┬─────────────────────────┘
+                         │ HTTP (localhost:8000)
+                         ▼
+┌──────────── Python バックエンド ─────────────────┐
+│  FastAPI = Claudeプロキシ                         │
+│  POST /api/agent/next → Claude が次の1手を決定    │
+└──────────────────────────────────────────────────┘
 ```
 
-### 4.2 フロントエンド (Electron / TypeScript)
+操作の実体は拡張機能側にあり、バックエンドはClaudeへの問い合わせを代行する軽量プロキシに徹する。
+
+### 4.2 拡張機能 (Chrome MV3 / JavaScript)
 
 | ファイル | 役割 |
 |---|---|
-| `main.ts` | ウィンドウ管理・Pythonプロセスの起動/終了 |
-| `index.html` | 左右分割レイアウト定義 |
-| `renderer.ts` | UIイベント処理・FastAPI通信・ステータス描画 |
+| `manifest.json` | MV3マニフェスト（権限: sidePanel / scripting / debugger / tabs / storage） |
+| `sidepanel.html` / `sidepanel.js` | サイドパネルUI（指示入力・実行ボタン・ログ表示） |
+| `background.js` | エージェントループ。DOM＋本文抽出・バックエンド問い合わせ・操作実行 |
 
 ### 4.3 バックエンド (Python / FastAPI)
 
 | ファイル | 役割 |
 |---|---|
-| `backend/app.py` | HTTPエンドポイント (`/api/execute`, `/api/pause`, `/api/resume`) |
-| `backend/agent/core.py` | Browser UseによるLLMエージェント制御・Playwright操作 |
+| `backend/app.py` | HTTPエンドポイント（`/api/agent/next`, `/api/health`）。Claudeプロキシ |
+| `backend/agent/ext_brain.py` | Claudeに次の1手を決めさせる頭脳（forced tool_use） |
 
 ---
 
-## 5. データフロー（レコード編集時のシーケンス）
+## 5. データフロー（1ステップのシーケンス）
 
 ```
-User (音声/テキスト入力)
+User（サイドパネルに指示入力）→ background.js
   │
-  ▼
-renderer.ts
-  │  POST /api/execute { "prompt": "3行目の摘要を修正して" }
-  ▼
-app.py (FastAPI)
+  ├─ 1. chrome.scripting.executeScript で現在のタブから
+  │      { url, title, text(本文), elements(番号付き操作可能要素) } を抽出
   │
-  ▼
-agent/core.py (Browser Use起動)
-  │  DOM/スクリーンショット取得
-  │  LLMが対象要素を特定
+  ├─ 2. POST localhost:8000/api/agent/next { task, page, history }
+  │         ▼
+  │      app.py → ext_brain.next_action() → Claude（browser_action ツール強制）
+  │         ▲
+  │      { action: { thought, action, index?, text?, result? } }
   │
-  ▼
-Playwright
-  │  編集ボタンクリック → 入力欄書き換え
-  │
-  ▼
-WebView画面に変更反映 → User確認 → 保存
+  └─ 3. action を実行
+         ├ click : 対象要素を scrollIntoView →中心座標へ
+         │          chrome.debugger Input.dispatchMouseEvent（trusted）
+         ├ input : クリックでフォーカス→ Ctrl+A/Delete → Input.insertText
+         ├ scroll: window.scrollBy
+         └ done  : result をサイドパネルに報告してループ終了
+  ↑ done になるまで 1〜3 を繰り返す（最大ステップ数で打ち切り）
 ```
+
+ポイント: Claudeには操作可能要素の一覧だけでなく **ページのタイトル・URL・本文テキスト** を渡す。これで「今どの画面か」「必要な情報が既に出ているか」を判断でき、画面を行き来するループを避けて done で報告できる。
 
 ---
 
-## 6. Human-in-the-Loop 制御設計
+## 6. 操作実行の仕組み（trusted イベント）
 
-### 6.1 ステートマシン
+弥生はSPA。合成イベント（`element.click()` 等の untrusted イベント）では反応しないハンドラがある。本拡張は `chrome.debugger` 経由で **CDP の `Input.dispatchMouseEvent` / `Input.insertText`** を送る。これらはOS由来のユーザー操作と同等の **trusted イベント** として扱われ、SPAのハンドラが確実に発火する（実画面で検証済み）。
 
-```
-IDLE ──[指示受信]──► RUNNING
-                        │
-              [一時停止 / 判断不能]
-                        │
-                        ▼
-                     PAUSED ──[再開]──► RUNNING
-                        │
-                     [キャンセル]
-                        ▼
-                      IDLE
-```
-
-### 6.2 状態ごとの動作
-
-| 状態 | UI | バックエンド |
-|---|---|---|
-| IDLE | 入力欄アクティブ | 待機中 |
-| RUNNING | 「操作中」バッジ表示・入力ロック | Playwright実行中（ノンブロッキング） |
-| PAUSED | 「手動介入受付中」バッジ・再開ボタン表示 | `asyncio.Event().wait()` で凍結 |
-
-### 6.3 ログイン方式（手動ログイン + セッション永続化）
-
-弥生のログインページは **Akamai BotManager** で保護され、さらに **MFA** を伴う。認証情報のプログラム自動入力は壊れやすく検知リスクも高いため、**自動ログインは行わない**。
-
-- **初回のみ手動ログイン:** ログイン画面を検出すると **PAUSED** へ遷移。ユーザーがブラウザ上で手動ログイン（MFA含む）し、`/api/resume` で再開する。
-- **2回目以降:** セッションが `~/.yayoi-copilot/session` に永続化されているため、ログイン画面はスキップされ、エージェントがそのまま操作を開始する。
-- **bot検知対策:** 実Chrome（`channel="chrome"`）を使用し、`--disable-blink-features=AutomationControlled` と `navigator.webdriver` の隠蔽で Akamai のブロックを回避する。
+- 座標はページ内で `getBoundingClientRect()` から要素中心を算出（CSSピクセル＝CDP座標系と一致）。
+- アタッチ中はChromeが「拡張機能がこのブラウザをデバッグしています」バーを表示する（仕様）。
 
 ---
 
-## 7. セッション永続化
+## 7. ログイン方式
 
-browser-use の `BrowserSession(user_data_dir=...)` を使用し、ユーザーデータディレクトリにCookieとセッションを保存する。2回目以降の起動ではログイン済み状態から開始される。
-
-> **注意:** browser-use 0.13.1 は Chrome の `user_data_dir` を一時ディレクトリにコピーして動かし、
-> 書き戻さないため、通常のパスでは永続化されない。ディレクトリ名に `browser-use-user-data-dir-`
-> を含めるとコピーをスキップして直接使うため、`~/.yayoi-copilot/browser-use-user-data-dir-session`
-> を指定することでセッションを永続化している。
-
-```python
-session = BrowserSession(
-    user_data_dir="~/.yayoi-copilot/browser-use-user-data-dir-session",
-    headless=False,
-    channel="chrome",
-    args=["--disable-blink-features=AutomationControlled"],
-)
-```
+弥生のログインは **Akamai BotManager** + **MFA** で保護される。本拡張は **ユーザーの本物のChrome** で動くため、ユーザーが普段どおり手動ログインすればよく、認証情報の自動入力は一切行わない。セッションもChrome本体が保持するため、拡張側でのセッション永続化処理は不要。
 
 ---
 
-## 8. 環境変数 (`.env`)
+## 8. セキュリティ
+
+- **APIキーを拡張に渡さない。** `ANTHROPIC_API_KEY` はバックエンド（localhost）のみが保持し、Claude問い合わせを代行する。拡張は鍵を持たない。
+- **書き込みガード。** `ext_brain.py` のシステムプロンプトで、ユーザーが明示指示しない限りデータの入力・変更・保存・削除を禁止。読み取り・確認系は操作後すぐ done で報告させる。
+- `.env`（`ANTHROPIC_API_KEY`）は絶対にコミットしない。
+
+### 環境変数 (`.env`)
 
 | 変数名 | 用途 |
 |---|---|
-| `ANTHROPIC_API_KEY` | Claude Sonnet 4.6用APIキー |
+| `ANTHROPIC_API_KEY` | Claude Sonnet 4.6 用APIキー |
 
-弥生のログイン情報は環境変数に保持しない（手動ログイン方式のため）。
+弥生のログイン情報は保持しない（手動ログインのため）。
 
 ---
 
-## 9. 開発ロードマップ
+## 9. 検証状況と今後
 
-### Phase 1 — MVP検証（Python単体）
+### 検証済み（実画面）
 
-- `backend/agent/core.py` でBrowser Use + Playwright単体動作確認。
-- 弥生会計のログイン・特定の仕訳編集・セッション永続化の精度を検証。
+- 本物のChrome上で拡張のサイドパネルが起動し、`chrome.debugger` のクリックを弥生SPAが受け付けることを確認。
+- 「契約管理を開いて内容を報告して」が、ページ本文を読んで done で報告するところまで動作。
 
-### Phase 2 — アプリ化（Electron連携）
+### 今後
 
-- Electronウィンドウ（左: WebView / 右: Side Panel）の構築。
-- FastAPI `/api/execute` エンドポイントとの HTTP 通信確立。
-- AIステータス（IDLE / RUNNING / PAUSED）のUI反映。
-
-### Phase 3 — 協調ワークフロー洗練
-
-- 手動一時停止・MFA手動解除待ちロジックの実装。
-- DOMエラー時のリトライ・例外処理。
-- 音声入力（Web Speech API）の統合。
+- **書き込み・編集操作**の検証（既存仕訳の修正など）。協調ワークフロー（最後の保存は人間）の作り込み。
+- ループ検知・リトライ・例外処理の強化。
+- 必要に応じて Chrome Web Store 公開／配布形態の検討。
