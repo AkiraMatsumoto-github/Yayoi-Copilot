@@ -30,6 +30,40 @@
     #status.running { background: #1a5c3a; color: #cfe; }
     #status.error { background: #7a1a1a; color: #fcc; }
 
+    /* 現在地バー */
+    .screenbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-bottom: 1px solid #2a2a4a;
+      background: #16162c;
+      font-size: 12px;
+    }
+    .screen-label { color: #678; font-size: 10px; }
+    #screen { color: #9cf; font-weight: bold; }
+    #screen.unknown { color: #fc8; }
+    #screen.off { color: #889; font-weight: normal; }
+    #open {
+      margin-left: auto;
+      background: #2a3a5a;
+      border: none;
+      color: #cde;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    #refresh {
+      background: none;
+      border: 1px solid #2a2a4a;
+      color: #89a;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 1px 7px;
+    }
+
     /* 会話エリア */
     #messages {
       flex: 1;
@@ -121,6 +155,13 @@
   <div class="header">
     <h1>弥生会計コパイロット</h1>
     <span id="status">待機中</span>
+  </div>
+
+  <div class="screenbar">
+    <span class="screen-label">現在地</span>
+    <span id="screen">確認中…</span>
+    <button id="open" title="弥生を開く（service_id付き）">弥生を開く</button>
+    <button id="refresh" title="現在地を再判定">↻</button>
   </div>
 
   <div id="messages"></div>

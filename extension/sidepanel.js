@@ -2,6 +2,9 @@ const taskEl = document.getElementById("task");
 const runBtn = document.getElementById("run");
 const statusEl = document.getElementById("status");
 const messagesEl = document.getElementById("messages");
+const screenEl = document.getElementById("screen");
+const refreshBtn = document.getElementById("refresh");
+const openBtn = document.getElementById("open");
 
 let running = false;
 let stepsBlock = null; // 現在の実行の <details>
@@ -110,8 +113,25 @@ taskEl.addEventListener("keydown", (e) => {
 
 taskEl.focus();
 
+// 現在地表示
+function setScreen(id, name, url) {
+  // 不明なときは実URLも見せる（画面定義を増やす手がかりにする）
+  screenEl.textContent = id === "unknown" && url ? `${name}（${url}）` : name;
+  screenEl.className = id === "unknown" ? "unknown" : id === "off" ? "off" : "";
+}
+function requestScreen() {
+  screenEl.textContent = "確認中…";
+  screenEl.className = "off";
+  chrome.runtime.sendMessage({ type: "whereami" });
+}
+refreshBtn.addEventListener("click", requestScreen);
+openBtn.addEventListener("click", () => chrome.runtime.sendMessage({ type: "open" }));
+requestScreen(); // パネル表示時に1回判定
+
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "log") {
+  if (msg.type === "screen") {
+    setScreen(msg.id, msg.name, msg.url);
+  } else if (msg.type === "log") {
     addStep(msg.text);
   } else if (msg.type === "done") {
     finishSteps();

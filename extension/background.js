@@ -3,6 +3,8 @@
 // バックエンド(Claude)に次の操作を問い合わせ、chrome.debugger で
 // 「本物の（trusted）」クリック・入力を実行する。
 
+import { detectScreen, ENTRY_URL } from "./screens.js";
+
 const BACKEND = "http://localhost:8000/api/agent/next";
 const MAX_STEPS = 15;
 const SETTLE_MS = 1500; // 画面遷移の待ち時間
@@ -24,8 +26,40 @@ chrome.runtime.onMessage.addListener((msg) => {
       abortRequested = true;
       sendLog("⏹ 中断を要求しました…（現在のステップ完了後に停止します）");
     }
+  } else if (msg.type === "whereami") {
+    reportScreen().catch(() => {});
+  } else if (msg.type === "open") {
+    openYayoi().catch(() => {});
   }
 });
+
+// 弥生を入口URL（service_id付き）で開く。現タブが弥生でなければそのタブで遷移。
+async function openYayoi() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab && tab.url && tab.url.includes("yayoi-kk.co.jp")) {
+    await chrome.tabs.update(tab.id, { url: ENTRY_URL });
+  } else {
+    await chrome.tabs.create({ url: ENTRY_URL });
+  }
+}
+
+// アクティブタブが変わった/読み込み完了したら現在地を再判定して通知（live表示）
+chrome.tabs.onActivated.addListener(() => reportScreen().catch(() => {}));
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status === "complete" && tab.active) reportScreen().catch(() => {});
+});
+
+// 現在のタブの画面を判定してサイドパネルへ送る（debugger不要・scriptingのみ）
+async function reportScreen() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.url || !tab.url.includes("yayoi-kk.co.jp")) {
+    send({ type: "screen", id: "off", name: "弥生のタブではありません" });
+    return;
+  }
+  const page = await extract(tab.id);
+  const screen = detectScreen(page);
+  send({ type: "screen", id: screen.id, name: screen.name, url: tab.url });
+}
 
 function send(payload) {
   // サイドパネルが閉じていると receiving end が無くエラーになるため握りつぶす
