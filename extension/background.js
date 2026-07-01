@@ -3,7 +3,8 @@
 // バックエンド(Claude)に次の操作を問い合わせ、chrome.debugger で
 // 「本物の（trusted）」クリック・入力を実行する。
 
-import { detectScreen, ENTRY_URL } from "./screens.js";
+import { detectScreen, screenById, ENTRY_URL } from "./screens.js";
+import { matchRecipe } from "./recipes.js";
 
 const BACKEND = "http://localhost:8000/api/agent/next";
 const MAX_STEPS = 15;
@@ -116,6 +117,7 @@ function send(payload) {
 const sendLog = (text) => send({ type: "log", text });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ルーター: レシピに一致すれば決定的ナビ→（必要なら）AI、無ければ従来のAIループ。
 async function runAgent(task) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.url || !tab.url.includes("yayoi-kk.co.jp")) {
@@ -126,6 +128,90 @@ async function runAgent(task) {
 
   isRunning = true;
   abortRequested = false;
+  try {
+    const recipe = matchRecipe(task);
+    if (recipe) {
+      sendLog(`📋 レシピ「${recipe.name}」を実行`);
+
+      // ── goto: 目的画面へ直接移動（現在地を見て自己修正） ──
+      if (recipe.goto) {
+        const target = screenById(recipe.goto);
+        sendLog(`→ ${target ? target.name : recipe.goto} へ移動`);
+        const r = await goToScreen(tabId, recipe.goto);
+        if (!r.ok) {
+          if (r.screen && r.screen.interstitial) {
+            const msg = (r.screen.onEnter || "stop:操作を中断しました。").replace(/^stop:/, "");
+            send({ type: "stopped", result: msg });
+            return;
+          }
+          sendLog(`⚠ 直接移動に失敗（現在地: ${r.screen ? r.screen.name : "不明"}）。AIに切替`);
+          await runAiLoop(tabId, task);
+          return;
+        }
+        sendLog(`✓ ${target ? target.name : recipe.goto} に到達`);
+      }
+
+      // ── then: 到達後にやること ──
+      const then = recipe.then;
+      if (!then) {
+        send({ type: "done", result: `${screenById(recipe.goto)?.name || "目的の画面"}を開きました。` });
+        return;
+      }
+      if (then.ai) {
+        await runAiLoop(tabId, then.ai === "original" ? task : then.ai);
+        return;
+      }
+      // ステップ配列の決定的実行は後続フェーズ。今はAIに委ねる。
+      await runAiLoop(tabId, task);
+      return;
+    }
+
+    // レシピ無し → 従来どおり全部AI
+    await runAiLoop(tabId, task);
+  } finally {
+    isRunning = false;
+    abortRequested = false;
+  }
+}
+
+// 目的画面へ直接遷移（MPA: URL直行が最も確実）→ 読み込み完了を待って検証
+async function goToScreen(tabId, targetId) {
+  const target = screenById(targetId);
+  if (!target || !target.url) return { ok: false, reason: "no-url" };
+
+  // すでに目的画面ならナビ不要
+  let here = detectScreen(await extract(tabId));
+  if (here.id === targetId) return { ok: true, screen: here };
+
+  await chrome.tabs.update(tabId, { url: target.url });
+  await waitForLoad(tabId);
+
+  here = detectScreen(await extract(tabId));
+  if (here.interstitial) return { ok: false, reason: "interstitial", screen: here };
+  return { ok: here.id === targetId, screen: here };
+}
+
+// タブの読み込み完了（status === "complete"）を待つ
+function waitForLoad(tabId, timeout = 8000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(v);
+    };
+    const listener = (id, info) => {
+      if (id === tabId && info.status === "complete") finish(true);
+    };
+    const timer = setTimeout(() => finish(false), timeout);
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+// 従来のAIエージェントループ（debugger で trusted 操作）。isRunning は呼び出し側が管理。
+async function runAiLoop(tabId, task) {
   await chrome.debugger.attach({ tabId }, "1.3");
   const history = [];
   try {
@@ -166,8 +252,6 @@ async function runAgent(task) {
     }
     send({ type: "done", result: "最大ステップ数に達しました。" });
   } finally {
-    isRunning = false;
-    abortRequested = false;
     try {
       await chrome.debugger.detach({ tabId });
     } catch (e) {
@@ -207,22 +291,142 @@ async function execute(tabId, action) {
   await mouseClick(tabId, pos.x, pos.y);
 
   if (action.action === "input") {
-    await sleep(200);
-    // 既存値をクリア（Ctrl+A → Delete）してから trusted な文字入力
-    await keyCombo(tabId, "a", true);
+    const text = action.text || "";
+    await sleep(150);
+
+    // ① まず「値を直接セット」で試す（Wijmo等のJS制御フィールドはキー入力を横取り
+    //    して壊すため、コントロール本体 or native setter に値を入れるのが確実）。
+    const r = await setFieldValue(tabId, action.index, text);
+    if (r) {
+      sendLog(
+        `✍ ${r.method}${r.ctrlType ? `(${r.ctrlType})` : ""} で設定: ` +
+          `"${r.before}" → "${r.after}"`
+      );
+    }
+
+    // ② それでも狙い通りにならなければ、従来の trusted キー入力にフォールバック
+    if (!r || normDate(r.after) !== normDate(text)) {
+      sendLog("↩ 値セットで一致せず。キー入力でフォールバック");
+      await keyCombo(tabId, "a", true);
+      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        key: "Delete",
+        windowsVirtualKeyCode: 46,
+      });
+      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Delete",
+        windowsVirtualKeyCode: 46,
+      });
+      await typeText(tabId, text);
+    }
+  }
+}
+
+// 日付文字列を比較用に正規化（区切り文字の差を無視、数字だけで比べる）
+function normDate(s) {
+  return String(s || "").replace(/\D/g, "");
+}
+
+// ページの MAIN world で値を直接セットする。
+//   1) Wijmo Control が見つかれば control.value(Date) / control.text をセット
+//   2) 無ければ native value setter + input/change イベント
+// world:"MAIN" 必須（isolated world からは window.wijmo が見えない）。
+async function setFieldValue(tabId, index, text) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: (idx, text) => {
+      const el = document.querySelector('[data-yayoi-idx="' + idx + '"]');
+      if (!el) return { ok: false, method: "none", before: "", after: "" };
+      const before = el.value != null ? String(el.value) : "";
+      const w = window.wijmo;
+      const info = { ok: false, method: "native", hasWijmo: !!w, before, after: before };
+
+      // ── Wijmo コントロールを祖先からたどって取得 ──
+      let ctrl = null;
+      if (w && w.Control && typeof w.Control.getControl === "function") {
+        for (let n = el; n && n !== document.body; n = n.parentElement) {
+          const c = w.Control.getControl(n);
+          if (c) {
+            ctrl = c;
+            break;
+          }
+        }
+      }
+
+      if (ctrl) {
+        info.method = "wijmo";
+        info.ctrlType = ctrl.constructor && ctrl.constructor.name;
+        try {
+          const m = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/.exec(text);
+          if (m && "value" in ctrl) {
+            ctrl.value = new Date(+m[1], +m[2] - 1, +m[3]);
+          } else if ("text" in ctrl) {
+            ctrl.text = text;
+          } else if ("value" in ctrl) {
+            ctrl.value = text;
+          }
+          if (typeof ctrl.refresh === "function") ctrl.refresh();
+          // Wijmoは自前でイベントを出すが、業務側ハンドラ用に change も通知
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          info.ok = true;
+        } catch (e) {
+          info.err = String(e);
+        }
+        info.after = el.value != null ? String(el.value) : "";
+        return info;
+      }
+
+      // ── フォールバック: native setter + イベント ──
+      try {
+        const proto = Object.getPrototypeOf(el);
+        const desc = Object.getOwnPropertyDescriptor(proto, "value");
+        if (desc && desc.set) desc.set.call(el, text);
+        else el.value = text;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("blur", { bubbles: true }));
+        info.ok = true;
+      } catch (e) {
+        info.err = String(e);
+      }
+      info.after = el.value != null ? String(el.value) : "";
+      return info;
+    },
+    args: [index, text],
+  });
+  return result;
+}
+
+// Windows仮想キーコード（マスク欄が e.key / keyCode を見て処理するため付与する）
+function vkFor(ch) {
+  if (ch >= "0" && ch <= "9") return ch.charCodeAt(0); // 48-57
+  if (/[a-z]/i.test(ch)) return ch.toUpperCase().charCodeAt(0);
+  if (ch === "/") return 191; // VK_OEM_2
+  if (ch === "-") return 189;
+  if (ch === ".") return 190;
+  return 0;
+}
+
+// 文字列を1文字ずつ trusted なキーイベントで入力する
+async function typeText(tabId, text) {
+  for (const ch of text) {
+    const vk = vkFor(ch);
+    const codes = vk ? { windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk } : {};
     await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
-      type: "rawKeyDown",
-      key: "Delete",
-      windowsVirtualKeyCode: 46,
+      type: "keyDown",
+      key: ch,
+      text: ch,
+      unmodifiedText: ch,
+      ...codes,
     });
     await chrome.debugger.sendCommand({ tabId }, "Input.dispatchKeyEvent", {
       type: "keyUp",
-      key: "Delete",
-      windowsVirtualKeyCode: 46,
+      key: ch,
+      ...codes,
     });
-    await chrome.debugger.sendCommand({ tabId }, "Input.insertText", {
-      text: action.text || "",
-    });
+    await sleep(25);
   }
 }
 
