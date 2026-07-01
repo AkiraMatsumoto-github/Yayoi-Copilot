@@ -44,8 +44,17 @@
     #screen { color: #9cf; font-weight: bold; }
     #screen.unknown { color: #fc8; }
     #screen.off { color: #889; font-weight: normal; }
-    #open {
+    #catalog {
       margin-left: auto;
+      background: none;
+      border: 1px solid #2a2a4a;
+      color: #89a;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 8px;
+    }
+    #open {
       background: #2a3a5a;
       border: none;
       color: #cde;
@@ -160,6 +169,7 @@
   <div class="screenbar">
     <span class="screen-label">現在地</span>
     <span id="screen">確認中…</span>
+    <button id="catalog" title="訪れた画面の一覧を表示・コピー">履歴</button>
     <button id="open" title="弥生を開く（service_id付き）">弥生を開く</button>
     <button id="refresh" title="現在地を再判定">↻</button>
   </div>

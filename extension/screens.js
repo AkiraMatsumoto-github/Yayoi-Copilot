@@ -1,104 +1,87 @@
 // 弥生会計コパイロット — 画面モデル（現在地特定の土台）
 // 設計: docs/recipe-design.md §3
 //
-// 判定材料は background が抽出している page = { url, title, text, elements }。
-// 弥生はMPA（画面遷移ごとにURLが変わる）なので、URLが最も信頼できる第一キー。
-// 足りない分だけ本文テキスト・要素で補う。
+// 弥生はMPA（画面遷移ごとにURLが変わる）。host+path が安定した一意キーになるので、
+// それで判定する。ページタイトルは「製品 - 画面名」の形に揃っているため、
+// 未定義のページでもタイトルから画面名を自動導出できる（→ 常に名前が出る）。
 
-// 各画面の signature（detect）の意味:
-//   urlIncludes : URL部分一致（強い手がかり）
-//   allText     : 全て本文に含まれること（必須条件）
-//   anyText     : いずれかが本文に含まれること
-//   notText     : 含まれてはいけない（似た画面の区別）
-//   hasElement  : { text?, role? } に合う操作要素が存在すること
-//   interstitial: 割り込み画面（login/dialog等）。通常画面より先に判定する
-//   onEnter     : 検知時の指示（"stop:メッセージ" 等）
-
-// 弥生の入口URL。service_id を付けないとポータルに飛んでしまうため必ず付ける。
+// 弥生の入口URL。service_id を付けないとポータルに飛ぶので必ず付ける。
 export const ENTRY_URL = "https://myaccount.yayoi-kk.co.jp/login?service_id=shinkoku";
 
+// 画面定義: { id, name, path } を基本に、特殊な判定だけ追加プロパティを使う。
+//   path        : host+path の部分一致で判定（最長一致を優先）
+//   interstitial: 割り込み画面（login等）。通常画面より先に判定
+//   onEnter     : 検知時の指示（"stop:メッセージ" 等）
+//   mutates     : この画面が書き込み系か（将来の安全判定用メモ）
 export const SCREENS = [
-  // ── 割り込み画面（最優先で判定）──
+  // ── 割り込み（最優先） ──
   {
     id: "login",
     name: "ログイン（要再ログイン）",
-    // 入口（既定URL）: https://myaccount.yayoi-kk.co.jp/login?service_id=shinkoku
-    detect: { urlIncludes: "myaccount.yayoi-kk.co.jp/login" },
+    // 入口は /login?service_id=shinkoku → /external/authz に遷移。myaccount全体を認証画面とみなす
+    path: "myaccount.yayoi-kk.co.jp/",
     interstitial: true,
     onEnter: "stop:ログインが必要です。手動でログインしてから再実行してください。",
   },
 
-  // ── 通常画面 ──
-  {
-    id: "myportal",
-    name: "マイポータル",
-    detect: { urlIncludes: "myportal", anyText: ["マイポータル", "弥生からのお知らせ"] },
-  },
-  {
-    id: "aoiro-home",
-    name: "やよいの青色申告 オンライン（ホーム）",
-    // 実ドメインは shinkoku.yayoi-kk.co.jp、ホームは /Home
-    detect: { urlIncludes: "/Home", anyText: ["スマート取引取込", "かんたん取引入力"] },
-  },
-  {
-    id: "journal",
-    name: "仕訳帳",
-    detect: {
-      allText: ["仕訳帳"],
-      anyText: ["取引", "借方", "貸方"],
-      notText: ["かんたん取引入力"],
-    },
-  },
+  // ── やよいの青色申告 オンライン（shinkoku） ──
+  { id: "aoiro-home", name: "ホーム", path: "shinkoku.yayoi-kk.co.jp/Home" },
+  { id: "report-menu", name: "レポート・帳簿", path: "shinkoku.yayoi-kk.co.jp/ReportMenu" },
+  { id: "input-journal", name: "仕訳の入力", path: "shinkoku.yayoi-kk.co.jp/InputJournal" },
+  { id: "input-dealings", name: "かんたん取引入力", path: "shinkoku.yayoi-kk.co.jp/InputDealings" },
+  { id: "tax-return", name: "確定申告の手順", path: "shinkoku.yayoi-kk.co.jp/TaxReturnProcedure" },
+
+  // レポート類（読み取り専用）
+  { id: "report-balance", name: "貸借レポート", path: "shinkoku.yayoi-kk.co.jp/BalanceReport" },
+  { id: "report-customer", name: "取引先別損益レポート", path: "shinkoku.yayoi-kk.co.jp/CustomerReport" },
+  { id: "report-daily", name: "日別取引レポート", path: "shinkoku.yayoi-kk.co.jp/DailyReport" },
+  { id: "report-kanjo", name: "科目別損益レポート", path: "shinkoku.yayoi-kk.co.jp/KanjoReport" },
+  { id: "report-monthly", name: "損益レポート", path: "shinkoku.yayoi-kk.co.jp/MonthlyReport" },
+  { id: "report-transition", name: "残高推移表", path: "shinkoku.yayoi-kk.co.jp/TransitionBalance" },
+  { id: "report-trial", name: "残高試算表", path: "shinkoku.yayoi-kk.co.jp/TrialBalance" },
+
+  // ── スマート取引取込（smart） ──
+  { id: "smart-csv", name: "CSVファイル取込", path: "smart.yayoi-kk.co.jp/Smart/CsvImport" },
+  { id: "smart-dealings", name: "未確定の取引", path: "smart.yayoi-kk.co.jp/Smart/Dealings" },
+  { id: "smart-rule", name: "仕訳ルール設定", path: "smart.yayoi-kk.co.jp/Smart/JournalizingRuleSettings" },
+  { id: "smart-past", name: "確定済みの取引", path: "smart.yayoi-kk.co.jp/Smart/PastDealings" },
+  { id: "smart-scan", name: "スキャンデータ取込", path: "smart.yayoi-kk.co.jp/Smart/ScanDataImport" },
+  { id: "smart-home", name: "スマート取引取込", path: "smart.yayoi-kk.co.jp/" },
 ];
 
-// detect の各条件を page に照合（真偽）
-function matches(detect, page) {
-  const url = page.url || "";
-  const text = page.text || "";
-  const elements = page.elements || [];
+const UNKNOWN = { id: "unknown", name: "不明" };
 
-  if (detect.urlIncludes && !url.includes(detect.urlIncludes)) return false;
-  if (detect.allText && !detect.allText.every((w) => text.includes(w))) return false;
-  if (detect.notText && detect.notText.some((w) => text.includes(w))) return false;
-  if (detect.anyText && !detect.anyText.some((w) => text.includes(w))) return false;
-  if (detect.hasElement && !elements.some((el) => elementMatches(el, detect.hasElement)))
-    return false;
-  return true;
+function pathHit(url, path) {
+  return (url || "").includes(path);
 }
 
-function elementMatches(el, want) {
-  if (want.text && !(el.text || "").includes(want.text)) return false;
-  if (want.role && (el.type || "") !== want.role) return false;
-  return true;
+// タイトル「製品 - 画面名」から画面名を取り出す（未定義ページ用フォールバック）
+function deriveName(title) {
+  if (!title) return null;
+  const parts = title.split(/\s*[-–—]\s*/);
+  return parts.length > 1 ? parts[parts.length - 1].trim() : title.trim();
 }
 
-// 具体度＝detect に並ぶ条件の数（多いほど具体的）。同点解消に使う。
-function specificity(detect) {
-  let n = 0;
-  if (detect.urlIncludes) n += 1;
-  if (detect.allText) n += detect.allText.length;
-  if (detect.notText) n += detect.notText.length;
-  if (detect.anyText) n += 1;
-  if (detect.hasElement) n += 1;
-  return n;
-}
-
-// 現在地を返す。設計 §3.3（真偽＋具体度、同点や該当なしは "unknown"）
-// 戻り値: { id, name, interstitial?, onEnter? } | { id: "unknown", name: "不明" }
+// 現在地を返す。基本はURL(host+path)の最長一致。未定義はタイトルから自動導出。
+// 戻り値: { id, name, interstitial?, onEnter?, auto? } | UNKNOWN
 export function detectScreen(page) {
+  const url = page.url || "";
+
   // 割り込み画面を先にチェック
   for (const s of SCREENS) {
-    if (s.interstitial && matches(s.detect, page)) return s;
+    if (s.interstitial && pathHit(url, s.path)) return s;
   }
-  // 通常画面のうち条件を満たすもの
-  const cands = SCREENS.filter((s) => !s.interstitial && matches(s.detect, page));
-  if (cands.length === 0) return UNKNOWN;
-  if (cands.length === 1) return cands[0];
 
-  // 複数一致 → 最も具体的なものを採用。同点なら unknown（誤判定より安全）
-  cands.sort((a, b) => specificity(b.detect) - specificity(a.detect));
-  if (specificity(cands[0].detect) === specificity(cands[1].detect)) return UNKNOWN;
-  return cands[0];
+  // 通常画面: path がURLに含まれるものを集め、最長一致を採用
+  const cands = SCREENS.filter((s) => !s.interstitial && pathHit(url, s.path));
+  if (cands.length) {
+    cands.sort((a, b) => b.path.length - a.path.length);
+    return cands[0];
+  }
+
+  // 未定義ページ → タイトルから画面名を自動導出（名前は出せる）
+  const name = deriveName(page.title);
+  if (name) return { id: "auto", name, auto: true };
+
+  return UNKNOWN;
 }
-
-const UNKNOWN = { id: "unknown", name: "不明" };

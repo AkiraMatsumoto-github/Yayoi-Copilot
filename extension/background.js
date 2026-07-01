@@ -30,6 +30,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     reportScreen().catch(() => {});
   } else if (msg.type === "open") {
     openYayoi().catch(() => {});
+  } else if (msg.type === "catalog") {
+    sendCatalog().catch(() => {});
+  } else if (msg.type === "clearCatalog") {
+    chrome.storage.local.set({ catalog: {} }).then(() => sendCatalog());
   }
 });
 
@@ -46,7 +50,10 @@ async function openYayoi() {
 // アクティブタブが変わった/読み込み完了したら現在地を再判定して通知（live表示）
 chrome.tabs.onActivated.addListener(() => reportScreen().catch(() => {}));
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status === "complete" && tab.active) reportScreen().catch(() => {});
+  if (info.status === "complete") {
+    recordCatalog(tab).catch(() => {}); // 訪れた画面を自動でカタログ蓄積
+    if (tab.active) reportScreen().catch(() => {});
+  }
 });
 
 // 現在のタブの画面を判定してサイドパネルへ送る（debugger不要・scriptingのみ）
@@ -58,7 +65,48 @@ async function reportScreen() {
   }
   const page = await extract(tab.id);
   const screen = detectScreen(page);
-  send({ type: "screen", id: screen.id, name: screen.name, url: tab.url });
+  send({
+    type: "screen",
+    id: screen.id,
+    name: screen.name,
+    url: tab.url,
+    title: page.title || tab.title || "",
+  });
+}
+
+// ───────── 画面カタログ（自動取得） ─────────
+// 弥生を普通に使うだけで、訪れた画面の host+path / title / URL を蓄積する。
+// これを書き出せば、人力で1画面ずつ聞かなくても全画面のマップが手に入る。
+
+function pathKey(url) {
+  try {
+    const u = new URL(url);
+    return u.host + u.pathname; // クエリは除いてパスでまとめる
+  } catch {
+    return url;
+  }
+}
+
+async function recordCatalog(tab) {
+  if (!tab || !tab.url || !tab.url.includes("yayoi-kk.co.jp")) return;
+  const key = pathKey(tab.url);
+  const { catalog = {} } = await chrome.storage.local.get("catalog");
+  const prev = catalog[key] || { count: 0 };
+  catalog[key] = {
+    title: tab.title || prev.title || "",
+    sampleUrl: tab.url, // クエリ付きの実例も1つ保持
+    count: prev.count + 1,
+    lastSeen: Date.now(),
+  };
+  await chrome.storage.local.set({ catalog });
+}
+
+async function sendCatalog() {
+  const { catalog = {} } = await chrome.storage.local.get("catalog");
+  const items = Object.entries(catalog)
+    .map(([path, v]) => ({ path, ...v }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  send({ type: "catalogData", items });
 }
 
 function send(payload) {

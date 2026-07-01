@@ -5,6 +5,7 @@ const messagesEl = document.getElementById("messages");
 const screenEl = document.getElementById("screen");
 const refreshBtn = document.getElementById("refresh");
 const openBtn = document.getElementById("open");
+const catalogBtn = document.getElementById("catalog");
 
 let running = false;
 let stepsBlock = null; // 現在の実行の <details>
@@ -114,9 +115,15 @@ taskEl.addEventListener("keydown", (e) => {
 taskEl.focus();
 
 // 現在地表示
-function setScreen(id, name, url) {
-  // 不明なときは実URLも見せる（画面定義を増やす手がかりにする）
-  screenEl.textContent = id === "unknown" && url ? `${name}（${url}）` : name;
+function setScreen(id, name, url, title) {
+  // 未定義の画面はタイトル（無ければURL）を出す。MPAなのでこれで十分識別できる。
+  if (id === "unknown") {
+    screenEl.textContent = title || url || "不明";
+    screenEl.title = url || "";
+  } else {
+    screenEl.textContent = name;
+    screenEl.title = "";
+  }
   screenEl.className = id === "unknown" ? "unknown" : id === "off" ? "off" : "";
 }
 function requestScreen() {
@@ -126,11 +133,29 @@ function requestScreen() {
 }
 refreshBtn.addEventListener("click", requestScreen);
 openBtn.addEventListener("click", () => chrome.runtime.sendMessage({ type: "open" }));
+catalogBtn.addEventListener("click", () => chrome.runtime.sendMessage({ type: "catalog" }));
 requestScreen(); // パネル表示時に1回判定
+
+// カタログ（自動取得した訪問画面一覧）を表示＋クリップボードへコピー
+function showCatalog(items) {
+  if (!items.length) {
+    addAssistant("まだ記録がありません。弥生の画面をいくつか開いてから押してください。");
+    return;
+  }
+  const lines = items.map((it) => `${it.path}\t${it.title || ""}\t${it.sampleUrl}`);
+  const text = "path\ttitle\turl\n" + lines.join("\n");
+  navigator.clipboard.writeText(text).catch(() => {});
+  addAssistant(
+    `訪れた画面 ${items.length} 件をコピーしました（クリップボード）。\n\n` +
+      items.map((it) => `・${it.title || "(無題)"}\n　${it.path}`).join("\n")
+  );
+}
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "screen") {
-    setScreen(msg.id, msg.name, msg.url);
+    setScreen(msg.id, msg.name, msg.url, msg.title);
+  } else if (msg.type === "catalogData") {
+    showCatalog(msg.items);
   } else if (msg.type === "log") {
     addStep(msg.text);
   } else if (msg.type === "done") {
