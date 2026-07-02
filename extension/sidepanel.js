@@ -151,11 +151,48 @@ function showCatalog(items) {
   );
 }
 
+// 確認ゲート（更新/削除/新規登録の実行前）。承認/キャンセルをbackgroundへ返す。
+function showConfirm(id, title, lines) {
+  const card = el("div", "confirm");
+  const h = el("div", "confirm-title");
+  h.textContent = "⚠ " + (title || "この操作を実行しますか？");
+  card.appendChild(h);
+  if (lines && lines.length) {
+    const ul = el("ul", "confirm-lines");
+    for (const line of lines) {
+      const li = document.createElement("li");
+      li.textContent = line;
+      ul.appendChild(li);
+    }
+    card.appendChild(ul);
+  }
+  const row = el("div", "confirm-row");
+  const okBtn = el("button", "confirm-ok");
+  okBtn.textContent = "実行する";
+  const noBtn = el("button", "confirm-no");
+  noBtn.textContent = "キャンセル";
+  const answer = (ok) => {
+    okBtn.disabled = noBtn.disabled = true;
+    card.classList.add(ok ? "confirmed" : "cancelled");
+    h.textContent = (ok ? "✓ 承認: " : "✕ キャンセル: ") + (title || "");
+    chrome.runtime.sendMessage({ type: "confirmResult", id, ok });
+  };
+  okBtn.addEventListener("click", () => answer(true));
+  noBtn.addEventListener("click", () => answer(false));
+  row.appendChild(okBtn);
+  row.appendChild(noBtn);
+  card.appendChild(row);
+  messagesEl.appendChild(card);
+  scrollBottom();
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "screen") {
     setScreen(msg.id, msg.name, msg.url, msg.title);
   } else if (msg.type === "catalogData") {
     showCatalog(msg.items);
+  } else if (msg.type === "confirm") {
+    showConfirm(msg.id, msg.title, msg.lines);
   } else if (msg.type === "log") {
     addStep(msg.text);
   } else if (msg.type === "done") {

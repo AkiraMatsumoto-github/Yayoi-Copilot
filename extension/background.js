@@ -17,6 +17,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 let isRunning = false;
 let abortRequested = false;
+let pendingConfirm = null; // 確認ゲートの応答待ち { id, resolve }
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "run") {
@@ -26,6 +27,18 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (isRunning) {
       abortRequested = true;
       sendLog("⏹ 中断を要求しました…（現在のステップ完了後に停止します）");
+      // 確認待ちなら「キャンセル」として解放
+      if (pendingConfirm) {
+        const p = pendingConfirm;
+        pendingConfirm = null;
+        p.resolve(false);
+      }
+    }
+  } else if (msg.type === "confirmResult") {
+    if (pendingConfirm && pendingConfirm.id === msg.id) {
+      const p = pendingConfirm;
+      pendingConfirm = null;
+      p.resolve(!!msg.ok);
     }
   } else if (msg.type === "whereami") {
     reportScreen().catch(() => {});
@@ -129,8 +142,9 @@ async function runAgent(task) {
   isRunning = true;
   abortRequested = false;
   try {
-    const recipe = matchRecipe(task);
-    if (recipe) {
+    const matched = matchRecipe(task);
+    if (matched) {
+      const { recipe, params } = matched;
       sendLog(`📋 レシピ「${recipe.name}」を実行`);
 
       // ── goto: 目的画面へ直接移動（現在地を見て自己修正） ──
@@ -151,7 +165,26 @@ async function runAgent(task) {
         sendLog(`✓ ${target ? target.name : recipe.goto} に到達`);
       }
 
-      // ── then: 到達後にやること ──
+      // ── steps: 到達後の決定的な操作（mutates のみ確認ゲート） ──
+      if (recipe.steps) {
+        const out = await runSteps(tabId, recipe, params, task);
+        if (out.stopped) {
+          send({ type: "stopped", result: out.message || "操作を中断しました。" });
+          return;
+        }
+        if (out.ok) {
+          send({
+            type: "done",
+            result: `${screenById(recipe.goto)?.name || recipe.name}で操作しました。`,
+          });
+          return;
+        }
+        sendLog(`⚠ 決定的ステップ失敗（${out.reason || "?"}）。AIに切替`);
+        await runAiLoop(tabId, task);
+        return;
+      }
+
+      // ── then: 到達後にやること（単一アクション/AI委譲） ──
       const then = recipe.then;
       if (!then) {
         send({ type: "done", result: `${screenById(recipe.goto)?.name || "目的の画面"}を開きました。` });
@@ -161,7 +194,6 @@ async function runAgent(task) {
         await runAiLoop(tabId, then.ai === "original" ? task : then.ai);
         return;
       }
-      // ステップ配列の決定的実行は後続フェーズ。今はAIに委ねる。
       await runAiLoop(tabId, task);
       return;
     }
@@ -208,6 +240,225 @@ function waitForLoad(tabId, timeout = 8000) {
     const timer = setTimeout(() => finish(false), timeout);
     chrome.tabs.onUpdated.addListener(listener);
   });
+}
+
+// ───────── 決定的ステップの実行（レシピ §4） ─────────
+
+// 確認ゲート: サイドパネルに内容を提示し、ユーザーの承認(true)/キャンセル(false)を待つ。
+// mutates（更新/削除/新規登録）のステップだけがこれを通る。読み取り系は通らない。
+function askConfirm(title, lines) {
+  return new Promise((resolve) => {
+    const id = String(Date.now());
+    pendingConfirm = { id, resolve };
+    send({ type: "confirm", id, title, lines });
+  });
+}
+
+// "{{name}}" を params の値で展開。取れないキーはそのまま残す（呼び出し側で判定）。
+function expand(str, params) {
+  return String(str).replace(/\{\{(\w+)\}\}/g, (_, k) =>
+    params[k] != null ? String(params[k]) : `{{${k}}}`
+  );
+}
+
+// 確認ゲートやログ用の、ステップの人間向け説明
+function describeStep(step, value) {
+  if (step.set) return `${step.set.label || step.set.css || "フィールド"} に「${value}」を入力`;
+  if (step.click) return `「${step.click.text || step.click.css}」をクリック`;
+  if (step.select) return `${step.select.target?.label || "選択"} を「${value}」に`;
+  return "操作";
+}
+
+// レシピの steps を決定的に実行する。debugger のアタッチはここで管理。
+// 戻り値: { ok } | { ok:false, reason } | { stopped:true, message }
+async function runSteps(tabId, recipe, rawParams, task) {
+  const params = { ...rawParams, ...(recipe.derive ? recipe.derive(rawParams, task) : {}) };
+
+  // テンプレート展開 & optional スキップ判定（実行前にまとめて解決）
+  const resolved = [];
+  for (const step of recipe.steps) {
+    let value;
+    if (step.value != null) {
+      value = expand(step.value, params);
+      if (/\{\{\w+\}\}/.test(value)) {
+        // 必要な値が取れなかった
+        if (step.optional) {
+          sendLog(`↷ スキップ: ${describeStep(step, value)}（値が指定されていません）`);
+          continue;
+        }
+        return { ok: false, reason: "param" };
+      }
+    }
+    resolved.push({ step, value });
+  }
+
+  // 確認ゲート: mutates を含むならまとめて1回提示
+  const mutates = resolved.filter((r) => r.step.mutates);
+  if (mutates.length) {
+    const lines = mutates.map((r) => describeStep(r.step, r.value));
+    sendLog("⏸ 確認待ち（更新系の操作）");
+    const ok = await askConfirm(`${recipe.name}を実行します。よろしいですか？`, lines);
+    if (!ok) return { stopped: true, message: "確認がキャンセルされました。" };
+  }
+
+  await chrome.debugger.attach({ tabId }, "1.3");
+  try {
+    for (const { step, value } of resolved) {
+      if (abortRequested) return { stopped: true, message: "中断しました。" };
+      sendLog(`▶ ${describeStep(step, value)}`);
+      const res = await execStep(tabId, step, value);
+      if (!res.ok) {
+        sendLog(`⚠ ステップ失敗: ${res.reason}`);
+        return { ok: false, reason: res.reason };
+      }
+      await sleep(700); // 画面反映を待つ
+    }
+    return { ok: true };
+  } finally {
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch (e) {
+      /* noop */
+    }
+  }
+}
+
+// 1ステップを実行（click / set）。要素は安定セレクタ or 表示テキストで特定。
+async function execStep(tabId, step, value) {
+  if (step.set) {
+    // css 指定を優先、無ければ label 基点で欄を特定（他ページにも流用しやすい）
+    const sel = await resolveFieldSelector(tabId, step.set);
+    if (!sel) return { ok: false, reason: "field-not-found" };
+    const r = await setFieldValue(tabId, sel, value);
+    if (!r || !r.ok) return { ok: false, reason: "set-failed" };
+    sendLog(`　✍ ${r.method}: "${r.before}" → "${r.after}"`);
+    // 値セットで一致しなければ、trusted クリック→キー入力でフォールバック
+    if (normDate(r.after) !== normDate(value)) {
+      const loc = await locate(tabId, { css: sel });
+      if (loc.found) {
+        await mouseClick(tabId, loc.x, loc.y);
+        await keyCombo(tabId, "a", true);
+        await typeText(tabId, value);
+      }
+    }
+    return { ok: true };
+  }
+
+  if (step.click) {
+    const loc = await locate(tabId, step.click);
+    if (!loc.found) {
+      return { ok: false, reason: loc.ambiguous ? `ambiguous(${loc.count})` : "not-found" };
+    }
+    await mouseClick(tabId, loc.x, loc.y);
+    return { ok: true };
+  }
+
+  return { ok: false, reason: "unknown-step" };
+}
+
+// ターゲット指定（css / text / role / nth）から要素を特定し、画面座標を返す。
+// あいまい（複数一致で nth 未指定）は found:false, ambiguous:true（§4.1 の安全規則）。
+async function locate(tabId, target) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (target) => {
+      let els;
+      if (target.css) {
+        els = Array.from(document.querySelectorAll(target.css));
+      } else {
+        const SEL =
+          'a, button, input[type="button"], input[type="submit"], [role="button"], [role="link"], [role="menuitem"], [role="tab"], [onclick]';
+        els = Array.from(document.querySelectorAll(SEL));
+      }
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const s = getComputedStyle(el);
+        return !(s.visibility === "hidden" || s.display === "none" || s.opacity === "0");
+      };
+      els = els.filter(visible);
+      if (target.role) els = els.filter((el) => el.getAttribute("role") === target.role);
+      if (target.text) {
+        const txt = (el) =>
+          (el.innerText || el.value || el.getAttribute("aria-label") || "").trim();
+        const hit = els.filter((el) => txt(el).includes(target.text));
+        const exact = hit.filter((el) => txt(el) === target.text);
+        els = exact.length ? exact : hit;
+      }
+      if (!els.length) return { found: false, count: 0 };
+      if (target.nth == null && els.length > 1) {
+        return { found: false, ambiguous: true, count: els.length };
+      }
+      const el = els[target.nth != null ? target.nth : 0];
+      if (!el) return { found: false, count: els.length };
+      el.scrollIntoView({ block: "center", inline: "center" });
+      const r = el.getBoundingClientRect();
+      return { found: true, count: els.length, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    },
+    args: [target],
+  });
+  return result || { found: false };
+}
+
+// 入力欄を css か label（ラベル文字列）で特定し、setFieldValue 用のセレクタを返す。
+//   css があれば優先（存在すればそれを使う）。無ければ label からたどって一時マークを付与。
+//   label 解決は「<label for>」「aria-label(ledby)」「見出しセル近傍の input」の順に探す。
+async function resolveFieldSelector(tabId, target) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (css, label) => {
+      // 古いマークを掃除
+      document.querySelectorAll("[data-yayoi-target]").forEach((e) => e.removeAttribute("data-yayoi-target"));
+
+      if (css) {
+        const el = document.querySelector(css);
+        if (el) return css;
+      }
+      if (!label) return null;
+
+      const findByLabel = (labelText) => {
+        // 1) <label for=id> / ラップする <label>
+        for (const lb of document.querySelectorAll("label")) {
+          if (!(lb.textContent || "").includes(labelText)) continue;
+          const forId = lb.getAttribute("for");
+          const byFor = forId ? document.getElementById(forId) : null;
+          if (byFor) return byFor;
+          const inner = lb.querySelector("input, select, textarea");
+          if (inner) return inner;
+        }
+        // 2) input 自身の aria-label / aria-labelledby
+        const inputs = Array.from(document.querySelectorAll("input, select, textarea"));
+        for (const inp of inputs) {
+          if ((inp.getAttribute("aria-label") || "").includes(labelText)) return inp;
+          const lbId = inp.getAttribute("aria-labelledby");
+          if (lbId) {
+            const lbEl = document.getElementById(lbId);
+            if (lbEl && (lbEl.textContent || "").includes(labelText)) return inp;
+          }
+        }
+        // 3) 見出しセル/ラベル語を含む要素の近傍にある input（同じ行・グループを数レベル上へ）
+        const heads = Array.from(document.querySelectorAll("th, td, dt, dd, label, span, div, p"));
+        for (const node of heads) {
+          const t = (node.textContent || "").trim();
+          if (t !== labelText && !t.startsWith(labelText)) continue;
+          let scope = node.closest("tr, .wj-input-group, .form-group, .field, li, dl") || node.parentElement;
+          for (let s = scope, i = 0; s && i < 4; s = s.parentElement, i++) {
+            const inp = s.querySelector('input:not([type="hidden"]), select, textarea');
+            if (inp) return inp;
+          }
+        }
+        return null;
+      };
+
+      const input = findByLabel(label);
+      if (!input) return null;
+      input.setAttribute("data-yayoi-target", "1");
+      input.scrollIntoView({ block: "center", inline: "center" });
+      return '[data-yayoi-target="1"]';
+    },
+    args: [target.css || null, target.label || null],
+  });
+  return result || null;
 }
 
 // 従来のAIエージェントループ（debugger で trusted 操作）。isRunning は呼び出し側が管理。
@@ -296,7 +547,7 @@ async function execute(tabId, action) {
 
     // ① まず「値を直接セット」で試す（Wijmo等のJS制御フィールドはキー入力を横取り
     //    して壊すため、コントロール本体 or native setter に値を入れるのが確実）。
-    const r = await setFieldValue(tabId, action.index, text);
+    const r = await setFieldValue(tabId, `[data-yayoi-idx="${action.index}"]`, text);
     if (r) {
       sendLog(
         `✍ ${r.method}${r.ctrlType ? `(${r.ctrlType})` : ""} で設定: ` +
@@ -332,12 +583,12 @@ function normDate(s) {
 //   1) Wijmo Control が見つかれば control.value(Date) / control.text をセット
 //   2) 無ければ native value setter + input/change イベント
 // world:"MAIN" 必須（isolated world からは window.wijmo が見えない）。
-async function setFieldValue(tabId, index, text) {
+async function setFieldValue(tabId, selector, text) {
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (idx, text) => {
-      const el = document.querySelector('[data-yayoi-idx="' + idx + '"]');
+    func: (selector, text) => {
+      const el = document.querySelector(selector);
       if (!el) return { ok: false, method: "none", before: "", after: "" };
       const before = el.value != null ? String(el.value) : "";
       const w = window.wijmo;
@@ -394,7 +645,7 @@ async function setFieldValue(tabId, index, text) {
       info.after = el.value != null ? String(el.value) : "";
       return info;
     },
-    args: [index, text],
+    args: [selector, text],
   });
   return result;
 }

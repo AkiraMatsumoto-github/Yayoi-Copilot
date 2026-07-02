@@ -7,11 +7,30 @@
 // triggers は配列。上から評価し、最初に一致したレシピを採用。
 // ※ 具体的なトリガーを先に置く（汎用が具体を食わないように）。
 
+import { parseRange } from "./dates.js";
+
 export const RECIPES = [
   // ── レポート類（具体的なものを先に） ──
   { id: "r-kanjo", name: "科目別損益レポートを開く", triggers: [/科目別/], goto: "report-kanjo" },
   { id: "r-customer", name: "取引先別損益レポートを開く", triggers: [/取引先別/], goto: "report-customer" },
-  { id: "r-daily", name: "日別取引レポートを開く", triggers: [/日別/], goto: "report-daily" },
+  // 決定的ステップの実例（読み取り系＝確認ゲート無し）。
+  //   「日別取引レポートを6月で表示」→ 期間欄をセットして「表示」を押す、までを固定手順で行う。
+  //   欄はラベル基点（開始日/終了日）で特定し、既知のIDはフォールバックとして併記。
+  //   → 同じ「開始日/終了日」を持つ他レポートにもこのパターンがそのまま流用できる。
+  {
+    id: "r-daily",
+    name: "日別取引レポートを表示",
+    triggers: [/日別/],
+    goto: "report-daily",
+    // 指示から期間を導出（「6月」「先月」「6/1〜6/30」「第1四半期」等 → { from, to }）
+    derive: (p, task) => parseRange(task) || {},
+    steps: [
+      // 期間が取れたときだけセット（optional: 取れなければスキップして既定期間のまま表示）
+      { set: { label: "開始日", css: "#SearchStartDate" }, value: "{{from}}", optional: true },
+      { set: { label: "終了日", css: "#SearchEndDate" }, value: "{{to}}", optional: true },
+      { click: { text: "表示" } },
+    ],
+  },
   { id: "r-monthly", name: "損益レポートを開く", triggers: [/損益(レポート)?/], goto: "report-monthly" },
   { id: "r-balance", name: "貸借レポートを開く", triggers: [/貸借/], goto: "report-balance" },
   { id: "r-transition", name: "残高推移表を開く", triggers: [/残高推移|推移表/], goto: "report-transition" },
@@ -33,11 +52,16 @@ export const RECIPES = [
   { id: "r-smart", name: "スマート取引取込を開く", triggers: [/スマート取引|取引取込/], goto: "smart-home" },
 ];
 
-// 指示にマッチするレシピを返す（無ければ null → AIループへ）
+// 指示にマッチするレシピと捕捉パラメータを返す（無ければ null → AIループへ）
+// 戻り値: { recipe, params } | null
+//   params は最初に一致したトリガーの名前付きキャプチャ（例: (?<month>…) → { month }）
 export function matchRecipe(task) {
   const t = task || "";
   for (const r of RECIPES) {
-    if (r.triggers.some((re) => re.test(t))) return r;
+    for (const re of r.triggers) {
+      const m = re.exec(t);
+      if (m) return { recipe: r, params: m.groups ? { ...m.groups } : {} };
+    }
   }
   return null;
 }
