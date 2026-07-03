@@ -5,7 +5,7 @@ const messagesEl = document.getElementById("messages");
 const screenEl = document.getElementById("screen");
 const refreshBtn = document.getElementById("refresh");
 const openBtn = document.getElementById("open");
-const catalogBtn = document.getElementById("catalog");
+const micBtn = document.getElementById("mic");
 
 let running = false;
 let stepsBlock = null; // 現在の実行の <details>
@@ -114,7 +114,116 @@ taskEl.addEventListener("keydown", (e) => {
 
 taskEl.focus();
 
-// 現在地表示
+// ── 音声入力（Chrome内蔵 Web Speech API, 日本語） ──
+// マイクボタンで録音→テキスト化して入力欄に差し込む。確定分は保持し、
+// 認識中の暫定テキストは末尾にプレビュー表示する。
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null;
+let listening = false;
+let micBase = ""; // 録音開始時点の入力欄内容（ここに認識結果を足す）
+
+if (!SpeechRecognition) {
+  // 非対応環境ではボタンを無効化（Chrome以外など）
+  micBtn.disabled = true;
+  micBtn.title = "この環境では音声入力に対応していません";
+} else {
+  micBtn.addEventListener("click", async () => {
+    if (listening) {
+      recog && recog.stop();
+      return;
+    }
+    // webkitSpeechRecognition は「許可済み」でないと即 not-allowed を返すため、
+    // 先に getUserMedia で許可プロンプトを出してから認識を開始する。
+    const ok = await ensureMicPermission();
+    if (ok) startRecog();
+  });
+}
+
+// マイク許可を確保する。
+// サイドパネル（chrome-extension:// ）では getUserMedia の許可プロンプトが出せないため、
+// 許可済みかどうかを permissions API で確認し、未許可なら専用タブで許可を取ってもらう。
+async function ensureMicPermission() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return true;
+
+  // まず許可状態を確認（granted なら getUserMedia は無音で成功する）。
+  let state = "prompt";
+  try {
+    const p = await navigator.permissions.query({ name: "microphone" });
+    state = p.state;
+  } catch (_) {
+    // permissions 未対応時は getUserMedia を直接試す。
+  }
+
+  if (state !== "denied") {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      return true;
+    } catch (_) {
+      // 未許可でプロンプトも出せない → 下の専用タブ導線へ。
+    }
+  }
+
+  // 未許可：専用の許可ページをタブで開く（ここならプロンプトが出せる）。
+  micBtn.classList.remove("listening");
+  chrome.tabs.create({ url: chrome.runtime.getURL("permission.html") });
+  addAssistant(
+    "音声入力にはマイクの許可が必要です。\n" +
+      "開いたタブで「マイクを許可する」を押して許可したあと、こちらに戻ってもう一度マイクボタンを押してください。",
+    "stopped"
+  );
+  return false;
+}
+
+function startRecog() {
+  recog = new SpeechRecognition();
+  recog.lang = "ja-JP";
+  recog.interimResults = true;
+  recog.continuous = true;
+
+  recog.onstart = () => {
+    listening = true;
+    micBase = taskEl.value ? taskEl.value.replace(/\s*$/, "") + " " : "";
+    micBtn.classList.add("listening");
+    micBtn.title = "停止";
+  };
+  recog.onresult = (e) => {
+    let finalText = "";
+    let interim = "";
+    for (let i = 0; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t;
+      else interim += t;
+    }
+    taskEl.value = micBase + finalText + interim;
+  };
+  recog.onerror = (e) => {
+    listening = false;
+    micBtn.classList.remove("listening");
+    micBtn.title = "音声入力（マイク）";
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      addAssistant("マイクの使用が許可されていません。ブラウザのマイク許可を有効にしてください。", "error");
+    } else if (e.error === "no-speech") {
+      // 無音で終了しただけ。通知不要。
+    } else if (e.error !== "aborted") {
+      addAssistant("音声入力でエラーが発生しました（" + e.error + "）。", "error");
+    }
+  };
+  recog.onend = () => {
+    listening = false;
+    micBtn.classList.remove("listening");
+    micBtn.title = "音声入力（マイク）";
+    taskEl.focus();
+  };
+
+  try {
+    recog.start();
+  } catch (_) {
+    // start 連打などのInvalidStateErrorは無視
+  }
+}
+
+// 現画面表示
 function setScreen(id, name, url, title) {
   // 未定義の画面はタイトル（無ければURL）を出す。MPAなのでこれで十分識別できる。
   if (id === "unknown") {
@@ -133,23 +242,7 @@ function requestScreen() {
 }
 refreshBtn.addEventListener("click", requestScreen);
 openBtn.addEventListener("click", () => chrome.runtime.sendMessage({ type: "open" }));
-catalogBtn.addEventListener("click", () => chrome.runtime.sendMessage({ type: "catalog" }));
 requestScreen(); // パネル表示時に1回判定
-
-// カタログ（自動取得した訪問画面一覧）を表示＋クリップボードへコピー
-function showCatalog(items) {
-  if (!items.length) {
-    addAssistant("まだ記録がありません。弥生の画面をいくつか開いてから押してください。");
-    return;
-  }
-  const lines = items.map((it) => `${it.path}\t${it.title || ""}\t${it.sampleUrl}`);
-  const text = "path\ttitle\turl\n" + lines.join("\n");
-  navigator.clipboard.writeText(text).catch(() => {});
-  addAssistant(
-    `訪れた画面 ${items.length} 件をコピーしました（クリップボード）。\n\n` +
-      items.map((it) => `・${it.title || "(無題)"}\n　${it.path}`).join("\n")
-  );
-}
 
 // 確認ゲート（更新/削除/新規登録の実行前）。承認/キャンセルをbackgroundへ返す。
 function showConfirm(id, title, lines) {
@@ -189,8 +282,6 @@ function showConfirm(id, title, lines) {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "screen") {
     setScreen(msg.id, msg.name, msg.url, msg.title);
-  } else if (msg.type === "catalogData") {
-    showCatalog(msg.items);
   } else if (msg.type === "confirm") {
     showConfirm(msg.id, msg.title, msg.lines);
   } else if (msg.type === "log") {

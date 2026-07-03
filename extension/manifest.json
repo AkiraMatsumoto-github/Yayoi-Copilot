@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "弥生会計コパイロット (PoC)",
+  "name": "弥生会計コパイロット",
   "version": "0.1.0",
-  "description": "弥生会計オンラインをAIで操作するサイドパネル（PoC）。ユーザーの本物のChromeで動作する。",
+  "description": "弥生会計オンラインをAIで操作するサイドパネル。ユーザーの本物のChromeで動作する。",
   "permissions": [
     "sidePanel",
     "scripting",

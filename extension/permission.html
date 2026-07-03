@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>マイクの許可 — 弥生会計コパイロット</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --surface: #ffffff;
+      --border: #e2e8ee;
+      --border-strong: #d3dbe3;
+      --text: #1f2933;
+      --text-sub: #6b7682;
+      --brand: #00a040;
+      --brand-hover: #008a37;
+      --brand-soft: #e6f5ec;
+      --danger: #d64545;
+      --danger-soft: #fdecec;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 4px 16px rgba(20, 30, 40, 0.08);
+      max-width: 440px;
+      width: 100%;
+      padding: 28px;
+      text-align: center;
+    }
+    .mark {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      background: var(--brand-soft);
+      color: var(--brand);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+    }
+    .mark svg { width: 26px; height: 26px; }
+    h1 { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+    p { font-size: 13px; line-height: 1.7; color: var(--text-sub); margin-bottom: 8px; }
+    .steps {
+      text-align: left;
+      font-size: 13px;
+      line-height: 1.8;
+      color: var(--text-sub);
+      background: var(--bg);
+      border-radius: 10px;
+      padding: 12px 14px 12px 30px;
+      margin: 16px 0 20px;
+    }
+    button {
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 11px 24px;
+      border-radius: 10px;
+      border: none;
+      background: var(--brand);
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    button:hover { background: var(--brand-hover); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #result {
+      margin-top: 18px;
+      font-size: 13px;
+      font-weight: 600;
+      min-height: 20px;
+    }
+    #result.ok { color: var(--brand-hover); }
+    #result.ng { color: var(--danger); }
+    .hint { font-size: 11px; color: #97a2ad; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+        <path d="M5 11a7 7 0 0 0 14 0"></path>
+        <line x1="12" y1="18" x2="12" y2="22"></line>
+      </svg>
+    </div>
+    <h1>音声入力のマイクを許可</h1>
+    <p>サイドパネルの音声入力を使うには、この拡張機能にマイクの使用を許可してください。</p>
+    <div class="steps">
+      1. 下のボタンを押す<br />
+      2. 画面上部に出る確認で「許可」を選ぶ<br />
+      3. このタブを閉じ、サイドパネルのマイクを押す
+    </div>
+    <button id="allow">マイクを許可する</button>
+    <div id="result"></div>
+    <div class="hint">録音音声はChrome内蔵の音声認識（Google）で文字起こしに使われます。</div>
+  </div>
+
+  <script src="permission.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-// 弥生会計コパイロット — 画面モデル（現在地特定の土台）
+// 弥生会計コパイロット — 画面モデル（現画面特定の土台）
 // 設計: docs/recipe-design.md §3
 //
 // 弥生はMPA（画面遷移ごとにURLが変わる）。host+path が安定した一意キーになるので、
@@ -72,7 +72,7 @@ function deriveName(title) {
   return parts.length > 1 ? parts[parts.length - 1].trim() : title.trim();
 }
 
-// 現在地を返す。基本はURL(host+path)の最長一致。未定義はタイトルから自動導出。
+// 現画面を返す。基本はURL(host+path)の最長一致。未定義はタイトルから自動導出。
 // 戻り値: { id, name, interstitial?, onEnter?, auto? } | UNKNOWN
 export function detectScreen(page) {
   const url = page.url || "";

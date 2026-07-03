@@ -1,4 +1,4 @@
-// 弥生会計コパイロット (PoC) — バックグラウンド（サービスワーカー）
+// 弥生会計コパイロット — バックグラウンド（サービスワーカー）
 // エージェントループ本体。chrome.scripting で画面のDOMを抽出し、
 // バックエンド(Claude)に次の操作を問い合わせ、chrome.debugger で
 // 「本物の（trusted）」クリック・入力を実行する。
@@ -46,10 +46,6 @@ chrome.runtime.onMessage.addListener((msg) => {
     reportScreen().catch(() => {});
   } else if (msg.type === "open") {
     openYayoi().catch(() => {});
-  } else if (msg.type === "catalog") {
-    sendCatalog().catch(() => {});
-  } else if (msg.type === "clearCatalog") {
-    chrome.storage.local.set({ catalog: {} }).then(() => sendCatalog());
   }
 });
 
@@ -63,13 +59,10 @@ async function openYayoi() {
   }
 }
 
-// アクティブタブが変わった/読み込み完了したら現在地を再判定して通知（live表示）
+// アクティブタブが変わった/読み込み完了したら現画面を再判定して通知（live表示）
 chrome.tabs.onActivated.addListener(() => reportScreen().catch(() => {}));
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status === "complete") {
-    recordCatalog(tab).catch(() => {}); // 訪れた画面を自動でカタログ蓄積
-    if (tab.active) reportScreen().catch(() => {});
-  }
+  if (info.status === "complete" && tab.active) reportScreen().catch(() => {});
 });
 
 // 現在のタブの画面を判定してサイドパネルへ送る（debugger不要・scriptingのみ）
@@ -88,41 +81,6 @@ async function reportScreen() {
     url: tab.url,
     title: page.title || tab.title || "",
   });
-}
-
-// ───────── 画面カタログ（自動取得） ─────────
-// 弥生を普通に使うだけで、訪れた画面の host+path / title / URL を蓄積する。
-// これを書き出せば、人力で1画面ずつ聞かなくても全画面のマップが手に入る。
-
-function pathKey(url) {
-  try {
-    const u = new URL(url);
-    return u.host + u.pathname; // クエリは除いてパスでまとめる
-  } catch {
-    return url;
-  }
-}
-
-async function recordCatalog(tab) {
-  if (!tab || !tab.url || !tab.url.includes("yayoi-kk.co.jp")) return;
-  const key = pathKey(tab.url);
-  const { catalog = {} } = await chrome.storage.local.get("catalog");
-  const prev = catalog[key] || { count: 0 };
-  catalog[key] = {
-    title: tab.title || prev.title || "",
-    sampleUrl: tab.url, // クエリ付きの実例も1つ保持
-    count: prev.count + 1,
-    lastSeen: Date.now(),
-  };
-  await chrome.storage.local.set({ catalog });
-}
-
-async function sendCatalog() {
-  const { catalog = {} } = await chrome.storage.local.get("catalog");
-  const items = Object.entries(catalog)
-    .map(([path, v]) => ({ path, ...v }))
-    .sort((a, b) => a.path.localeCompare(b.path));
-  send({ type: "catalogData", items });
 }
 
 function send(payload) {
@@ -149,7 +107,7 @@ async function runAgent(task) {
       const { recipe, params } = matched;
       sendLog(`📋 レシピ「${recipe.name}」を実行`);
 
-      // ── goto: 目的画面へ直接移動（現在地を見て自己修正） ──
+      // ── goto: 目的画面へ直接移動（現画面を見て自己修正） ──
       if (recipe.goto) {
         const target = screenById(recipe.goto);
         sendLog(`→ ${target ? target.name : recipe.goto} へ移動`);
@@ -160,7 +118,7 @@ async function runAgent(task) {
             send({ type: "stopped", result: msg });
             return;
           }
-          sendLog(`⚠ 直接移動に失敗（現在地: ${r.screen ? r.screen.name : "不明"}）。AIに切替`);
+          sendLog(`⚠ 直接移動に失敗（現画面: ${r.screen ? r.screen.name : "不明"}）。AIに切替`);
           await runAiLoop(tabId, task);
           return;
         }
