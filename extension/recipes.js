@@ -40,6 +40,26 @@ export const RECIPES = [
 
   // ── 入力・メニュー ──
   { id: "r-input-journal", name: "仕訳の入力を開く", triggers: [/仕訳(の)?入力/, /仕訳帳/, /仕訳を(入力|つけ|記帳)/], goto: "input-journal" },
+  // 取引の登録（書き込み系）: かんたん取引入力で決定的に登録する。
+  //   値は Claude が指示文から構造化抽出（extract:"dealing"）、入力はラベル基点で決定的に行う。
+  //   区分タブを最初に選び（破棄ダイアログ回避）、mutates ステップは実行前に確認ゲートで一括提示。
+  {
+    id: "r-register-dealing",
+    name: "かんたん取引入力で登録",
+    triggers: [/(登録|記帳)して/, /(取引|経費|支出|収入|仕入|売上|入金|出金)を?(登録|記帳|つけ)/],
+    goto: "input-dealings",
+    extract: "dealing",
+    steps: [
+      { click: { text: "{{kubun}}", role: "tab" }, optional: true, mutates: true },
+      { set: { label: "取引日" }, value: "{{date}}", mutates: true },
+      { set: { label: "科目" }, value: "{{account}}", mutates: true },
+      { set: { label: "取引手段" }, value: "{{method}}", mutates: true },
+      { set: { label: "摘要" }, value: "{{summary}}", optional: true, mutates: true },
+      { set: { label: "取引先" }, value: "{{partner}}", optional: true, mutates: true },
+      { set: { label: "金額" }, value: "{{amount}}", mutates: true },
+      { click: { text: "登録" }, mutates: true },
+    ],
+  },
   { id: "r-input-dealings", name: "かんたん取引入力を開く", triggers: [/かんたん取引|かんたん入力|簡単取引/], goto: "input-dealings" },
   { id: "r-report-menu", name: "レポート・帳簿を開く", triggers: [/レポート・帳簿|帳簿/], goto: "report-menu" },
   { id: "r-tax", name: "確定申告の手順を開く", triggers: [/確定申告/], goto: "tax-return" },

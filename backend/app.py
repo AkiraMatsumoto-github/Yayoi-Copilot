@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent.ext_brain import next_action
+from agent.extract_dealing import extract_dealing
 
 app = FastAPI(title="Yayoi Copilot Backend")
 
@@ -39,9 +40,20 @@ class NextActionRequest(BaseModel):
     history: list[dict] = []
 
 
+class ExtractRequest(BaseModel):
+    task: str
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True}
+
+
+@app.post("/api/agent/extract-dealing")
+async def agent_extract_dealing(req: ExtractRequest):
+    """取引の登録指示を、かんたん取引入力の各欄に対応する項目へ構造化する。"""
+    fields = await asyncio.to_thread(extract_dealing, req.task)
+    return {"fields": fields}
 
 
 @app.post("/api/agent/next")

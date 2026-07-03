@@ -9,6 +9,8 @@ import { matchRecipe } from "./recipes.js";
 const BACKEND = "http://localhost:8000/api/agent/next";
 const MAX_STEPS = 15;
 const SETTLE_MS = 1500; // 画面遷移の待ち時間
+// 更新系（新規登録/保存/更新/削除）ボタンの表示テキスト。AIループでこれを押す直前に確認ゲートを挟む。
+const MUTATING_TEXT = /^(登録|保存|更新|削除|この内容で登録)/;
 
 // ツールバーアイコンのクリックでサイドパネルを開く
 chrome.runtime.onInstalled.addListener(() => {
@@ -167,7 +169,23 @@ async function runAgent(task) {
 
       // ── steps: 到達後の決定的な操作（mutates のみ確認ゲート） ──
       if (recipe.steps) {
-        const out = await runSteps(tabId, recipe, params, task);
+        let stepParams = params;
+        // extract: Claude が指示文から各欄の値を構造化抽出（値のみ。入力は決定的）。
+        if (recipe.extract === "dealing") {
+          sendLog("🧩 指示から取引項目を抽出中…");
+          const ex = await extractFields(task);
+          if (!ex || !ex.account || !ex.amount) {
+            sendLog("⚠ 項目抽出に失敗。AIに切替");
+            await runAiLoop(tabId, task);
+            return;
+          }
+          stepParams = { ...params, ...ex };
+          sendLog(
+            `🧩 抽出: 区分=${ex.kubun} 日付=${ex.date} 科目=${ex.account} ` +
+              `手段=${ex.method} 金額=${ex.amount}`
+          );
+        }
+        const out = await runSteps(tabId, recipe, stepParams, task);
         if (out.stopped) {
           send({ type: "stopped", result: out.message || "操作を中断しました。" });
           return;
@@ -242,6 +260,34 @@ function waitForLoad(tabId, timeout = 8000) {
   });
 }
 
+// 指示文を「かんたん取引入力」の各欄の値に構造化する（バックエンド＝Claude）。
+//   戻り値はテンプレート用の ASCII キー。任意欄（摘要/取引先）は空なら省略し、
+//   ステップ側で optional スキップさせる。失敗時は null。
+async function extractFields(task) {
+  try {
+    const res = await fetch("http://localhost:8000/api/agent/extract-dealing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task }),
+    });
+    if (!res.ok) return null;
+    const { fields } = await res.json();
+    if (!fields) return null;
+    const p = {
+      kubun: fields.kubun || "",
+      date: fields.date || "",
+      account: fields.account || "",
+      method: fields.method || "",
+      amount: fields.amount != null ? String(fields.amount) : "",
+    };
+    if (fields.summary) p.summary = fields.summary;
+    if (fields.partner) p.partner = fields.partner;
+    return p;
+  } catch (e) {
+    return null;
+  }
+}
+
 // ───────── 決定的ステップの実行（レシピ §4） ─────────
 
 // 確認ゲート: サイドパネルに内容を提示し、ユーザーの承認(true)/キャンセル(false)を待つ。
@@ -261,6 +307,16 @@ function expand(str, params) {
   );
 }
 
+// ターゲット（click/set の text・label・css）内の {{name}} も params で展開する。
+function expandTarget(t, params) {
+  if (!t) return t;
+  const out = { ...t };
+  for (const k of ["text", "label", "css"]) {
+    if (typeof out[k] === "string") out[k] = expand(out[k], params);
+  }
+  return out;
+}
+
 // 確認ゲートやログ用の、ステップの人間向け説明
 function describeStep(step, value) {
   if (step.set) return `${step.set.label || step.set.css || "フィールド"} に「${value}」を入力`;
@@ -277,19 +333,26 @@ async function runSteps(tabId, recipe, rawParams, task) {
   // テンプレート展開 & optional スキップ判定（実行前にまとめて解決）
   const resolved = [];
   for (const step of recipe.steps) {
+    // ターゲット（click/set の text/label/css）も展開したコピーを作る
+    const rstep = { ...step };
+    if (step.set) rstep.set = expandTarget(step.set, params);
+    if (step.click) rstep.click = expandTarget(step.click, params);
+
     let value;
-    if (step.value != null) {
-      value = expand(step.value, params);
-      if (/\{\{\w+\}\}/.test(value)) {
-        // 必要な値が取れなかった
-        if (step.optional) {
-          sendLog(`↷ スキップ: ${describeStep(step, value)}（値が指定されていません）`);
-          continue;
-        }
-        return { ok: false, reason: "param" };
+    if (step.value != null) value = expand(step.value, params);
+
+    // 値・ターゲットに未解決の {{}} が残れば、値が取れなかったということ
+    const unresolved =
+      (value != null && /\{\{\w+\}\}/.test(value)) ||
+      /\{\{\w+\}\}/.test(JSON.stringify(rstep.set || rstep.click || {}));
+    if (unresolved) {
+      if (step.optional) {
+        sendLog(`↷ スキップ: ${describeStep(rstep, value)}（値が指定されていません）`);
+        continue;
       }
+      return { ok: false, reason: "param" };
     }
-    resolved.push({ step, value });
+    resolved.push({ step: rstep, value });
   }
 
   // 確認ゲート: mutates を含むならまとめて1回提示
@@ -338,7 +401,8 @@ async function execStep(tabId, step, value) {
     }
     const r = await setFieldValue(tabId, sel, value);
     if (!r || !r.ok) return { ok: false, reason: "set-failed" };
-    sendLog(`　✍ ${r.method}: "${r.before}" → "${r.after}"`);
+    const extra = r.comboItems != null ? ` [候補${r.comboItems} 選択idx=${r.picked}]` : "";
+    sendLog(`　✍ ${r.method}${r.ctrlType ? `(${r.ctrlType})` : ""}: "${r.before}" → "${r.after}"${extra}`);
     // 値セットで一致しなければ、trusted クリック→キー入力でフォールバック
     if (normDate(r.after) !== normDate(value)) {
       const loc = await locate(tabId, { css: sel });
@@ -475,6 +539,44 @@ async function resolveFieldSelector(tabId, target) {
   return result || null;
 }
 
+// 確認ゲートの提示用に、かんたん取引入力フォームの現在値を「ラベル: 値」で読む。
+//   ラベル近傍の input を数レベル上へたどって拾う（resolveFieldSelector と同じ見出し近傍ヒューリスティック）。
+//   フォームが見つからなくても [] を返す（確認ゲートはボタン名だけで提示される）。
+async function readEntryForm(tabId) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (labels) => {
+      const valueByLabel = (labelText) => {
+        const heads = Array.from(document.querySelectorAll("th, td, dt, dd, label, span, div, p"));
+        for (const node of heads) {
+          const t = (node.textContent || "").trim();
+          if (t !== labelText && !t.startsWith(labelText)) continue;
+          const scope =
+            node.closest("tr, .wj-input-group, .form-group, .field, li, dl") || node.parentElement;
+          for (let s = scope, i = 0; s && i < 4; s = s.parentElement, i++) {
+            const inp = s.querySelector('input:not([type="hidden"]), select, textarea');
+            if (inp) return (inp.value || "").trim();
+          }
+        }
+        return null;
+      };
+      const out = [];
+      const activeTab = document.querySelector(
+        '[role="tab"][aria-selected="true"], .wj-state-active[role="tab"]'
+      );
+      const tabText = activeTab ? (activeTab.textContent || "").trim() : "";
+      if (tabText) out.push(`区分: ${tabText}`);
+      for (const lb of labels) {
+        const v = valueByLabel(lb);
+        if (v) out.push(`${lb}: ${v}`);
+      }
+      return out;
+    },
+    args: [["取引日", "科目", "取引手段", "摘要", "取引先", "金額"]],
+  });
+  return result || [];
+}
+
 // 従来のAIエージェントループ（debugger で trusted 操作）。isRunning は呼び出し側が管理。
 async function runAiLoop(tabId, task) {
   await chrome.debugger.attach({ tabId }, "1.3");
@@ -509,6 +611,22 @@ async function runAiLoop(tabId, task) {
       if (abortRequested) {
         send({ type: "stopped", result: "中断しました。" });
         return;
+      }
+
+      // 更新系（登録/保存/更新/削除）ボタンの押下直前は、人間の確認を必ず挟む。
+      // 読み取り・画面遷移では発火しない（対象テキストが一致しないため）。
+      if (action.action === "click") {
+        const elText = (page.elements[action.index]?.text || "").trim();
+        if (MUTATING_TEXT.test(elText)) {
+          const lines = await readEntryForm(tabId);
+          sendLog("⏸ 確認待ち（更新系の操作）");
+          const ok = await askConfirm(`「${elText}」を実行します。この内容でよろしいですか？`, lines);
+          if (!ok) {
+            send({ type: "stopped", result: `「${elText}」をキャンセルしました。` });
+            return;
+          }
+          sendLog(`✅ 承認: 「${elText}」を実行します`);
+        }
       }
 
       await execute(tabId, action);
@@ -624,9 +742,51 @@ async function setFieldValue(tabId, selector, text) {
         info.method = "wijmo";
         info.ctrlType = ctrl.constructor && ctrl.constructor.name;
         try {
+          const comboLike =
+            "itemsSource" in ctrl ||
+            "selectedIndex" in ctrl ||
+            typeof ctrl.indexOf === "function";
           const m = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/.exec(text);
-          if (m && "value" in ctrl) {
+          if (m && "value" in ctrl && !comboLike) {
+            // 日付（InputDate）: Date で直接セット
             ctrl.value = new Date(+m[1], +m[2] - 1, +m[3]);
+          } else if (comboLike) {
+            // コンボ（科目・取引手段など KamokuBox）: 候補から一致項目を選択する。
+            // 完全一致を優先し、無ければ部分一致（「三井住友」→「クレジットカード（三井住友VISAカード）」）。
+            const src = ctrl.itemsSource;
+            const items = Array.isArray(src)
+              ? src
+              : (src && (src.items || src.sourceCollection)) || [];
+            const dp = ctrl.displayMemberPath;
+            const disp = (it) => (dp && it && typeof it === "object" ? it[dp] : it);
+            // 診断: KamokuBox が何を公開しているか
+            info.comboItems = items.length;
+            info.api = {
+              indexOf: typeof ctrl.indexOf === "function",
+              selectedIndex: "selectedIndex" in ctrl,
+              selectedValue: "selectedValue" in ctrl,
+              selectedItem: "selectedItem" in ctrl,
+              itemsSource: "itemsSource" in ctrl,
+              dp: dp || null,
+            };
+
+            let i = -1;
+            if (typeof ctrl.indexOf === "function") {
+              i = ctrl.indexOf(text, true);
+              if (i < 0) i = ctrl.indexOf(text, false);
+            }
+            if (i < 0 && items.length) {
+              i = items.findIndex((it) => String(disp(it) ?? "") === text);
+              if (i < 0) i = items.findIndex((it) => String(disp(it) ?? "").includes(text));
+            }
+            info.picked = i;
+            if (i >= 0) {
+              if ("selectedIndex" in ctrl) ctrl.selectedIndex = i;
+              else if ("selectedItem" in ctrl) ctrl.selectedItem = items[i];
+              else if ("text" in ctrl) ctrl.text = String(disp(items[i]) ?? text);
+            } else if ("text" in ctrl) {
+              ctrl.text = text; // 候補に無ければ入力値のまま（呼び出し側でミスマッチ検知）
+            }
           } else if ("text" in ctrl) {
             ctrl.text = text;
           } else if ("value" in ctrl) {
