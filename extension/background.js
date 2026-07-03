@@ -328,7 +328,14 @@ async function execStep(tabId, step, value) {
   if (step.set) {
     // css 指定を優先、無ければ label 基点で欄を特定（他ページにも流用しやすい）
     const sel = await resolveFieldSelector(tabId, step.set);
-    if (!sel) return { ok: false, reason: "field-not-found" };
+    if (!sel) {
+      // optional なら欄が無い画面ではスキップ（例: 期間欄を持たないレポート）
+      if (step.optional) {
+        sendLog(`↷ 入力欄が見つからないためスキップ（${step.set.css || step.set.label || "?"}）`);
+        return { ok: true };
+      }
+      return { ok: false, reason: "field-not-found" };
+    }
     const r = await setFieldValue(tabId, sel, value);
     if (!r || !r.ok) return { ok: false, reason: "set-failed" };
     sendLog(`　✍ ${r.method}: "${r.before}" → "${r.after}"`);
@@ -347,6 +354,12 @@ async function execStep(tabId, step, value) {
   if (step.click) {
     const loc = await locate(tabId, step.click);
     if (!loc.found) {
+      // optional なクリックは、対象が無ければスキップ（例: 期間変更で自動反映され
+      // 「表示」ボタンが無いレポート）。必須クリックは失敗させてAIへ。
+      if (step.optional) {
+        sendLog("↷ クリック対象が見つからないためスキップ（自動反映とみなす）");
+        return { ok: true };
+      }
       return { ok: false, reason: loc.ambiguous ? `ambiguous(${loc.count})` : "not-found" };
     }
     await mouseClick(tabId, loc.x, loc.y);
@@ -379,10 +392,11 @@ async function locate(tabId, target) {
       els = els.filter(visible);
       if (target.role) els = els.filter((el) => el.getAttribute("role") === target.role);
       if (target.text) {
+        const wants = Array.isArray(target.text) ? target.text : [target.text];
         const txt = (el) =>
           (el.innerText || el.value || el.getAttribute("aria-label") || "").trim();
-        const hit = els.filter((el) => txt(el).includes(target.text));
-        const exact = hit.filter((el) => txt(el) === target.text);
+        const hit = els.filter((el) => wants.some((w) => txt(el).includes(w)));
+        const exact = hit.filter((el) => wants.some((w) => txt(el) === w));
         els = exact.length ? exact : hit;
       }
       if (!els.length) return { found: false, count: 0 };

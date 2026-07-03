@@ -9,32 +9,34 @@
 
 import { parseRange } from "./dates.js";
 
-export const RECIPES = [
-  // ── レポート類（具体的なものを先に） ──
-  { id: "r-kanjo", name: "科目別損益レポートを開く", triggers: [/科目別/], goto: "report-kanjo" },
-  { id: "r-customer", name: "取引先別損益レポートを開く", triggers: [/取引先別/], goto: "report-customer" },
-  // 決定的ステップの実例（読み取り系＝確認ゲート無し）。
-  //   「日別取引レポートを6月で表示」→ 期間欄をセットして「表示」を押す、までを固定手順で行う。
-  //   欄はラベル基点（開始日/終了日）で特定し、既知のIDはフォールバックとして併記。
-  //   → 同じ「開始日/終了日」を持つ他レポートにもこのパターンがそのまま流用できる。
-  {
-    id: "r-daily",
-    name: "日別取引レポートを表示",
-    triggers: [/日別/],
-    goto: "report-daily",
+// レポート共通の「期間指定」決定的ステップ（読み取り系＝確認ゲート無し）。
+//   期間UIは各レポート共通で「[日指定▼] [開始日] 〜 [終了日]」。ラベルは無く安定IDで特定。
+//   期間欄を変えると自動反映される（表示ボタンは無い）。既定は日指定モード。
+//   欄が無いレポートでは optional によりスキップ（＝画面を開くだけ）。
+function periodReport(id, name, goto, triggers) {
+  return {
+    id,
+    name,
+    triggers,
+    goto,
     // 指示から期間を導出（「6月」「先月」「6/1〜6/30」「第1四半期」等 → { from, to }）
-    derive: (p, task) => parseRange(task) || {},
+    derive: (_p, task) => parseRange(task) || {},
     steps: [
-      // 期間が取れたときだけセット（optional: 取れなければスキップして既定期間のまま表示）
-      { set: { label: "開始日", css: "#SearchStartDate" }, value: "{{from}}", optional: true },
-      { set: { label: "終了日", css: "#SearchEndDate" }, value: "{{to}}", optional: true },
-      { click: { text: "表示" } },
+      { set: { css: "#SearchStartDate" }, value: "{{from}}", optional: true },
+      { set: { css: "#SearchEndDate" }, value: "{{to}}", optional: true },
     ],
-  },
-  { id: "r-monthly", name: "損益レポートを開く", triggers: [/損益(レポート)?/], goto: "report-monthly" },
-  { id: "r-balance", name: "貸借レポートを開く", triggers: [/貸借/], goto: "report-balance" },
-  { id: "r-transition", name: "残高推移表を開く", triggers: [/残高推移|推移表/], goto: "report-transition" },
-  { id: "r-trial", name: "残高試算表を開く", triggers: [/試算表|残高試算/], goto: "report-trial" },
+  };
+}
+
+export const RECIPES = [
+  // ── レポート類（具体的なものを先に。全て期間指定を決定的にセット） ──
+  periodReport("r-kanjo", "科目別損益レポートを表示", "report-kanjo", [/科目別/]),
+  periodReport("r-customer", "取引先別損益レポートを表示", "report-customer", [/取引先別/]),
+  periodReport("r-daily", "日別取引レポートを表示", "report-daily", [/日別/]),
+  periodReport("r-monthly", "損益レポートを表示", "report-monthly", [/損益(レポート)?/]),
+  periodReport("r-balance", "貸借レポートを表示", "report-balance", [/貸借/]),
+  periodReport("r-transition", "残高推移表を表示", "report-transition", [/残高推移|推移表/]),
+  periodReport("r-trial", "残高試算表を表示", "report-trial", [/試算表|残高試算/]),
 
   // ── 入力・メニュー ──
   { id: "r-input-journal", name: "仕訳の入力を開く", triggers: [/仕訳(の)?入力/, /仕訳帳/, /仕訳を(入力|つけ|記帳)/], goto: "input-journal" },
